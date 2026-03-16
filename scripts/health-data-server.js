@@ -1,0 +1,436 @@
+/**
+ * 健康数据 HTTP 同步服务器
+ * 接收小程序采集的健康数据，保存到本地 JSON 文件并写入 MySQL 数据库
+ * 同时提供 REST API 供外部客户查询数据
+ *
+ * 使用方法:
+ * 1. 安装依赖: npm install (在 scripts 目录下)
+ * 2. 启动 MySQL: echo "xyf" | sudo -S service mysql start
+ * 3. 启动服务器: node health-data-server.js
+ * 4. 服务器将在 http://localhost:3000 运行
+ *
+ * 注意: 在微信开发者工具中需要勾选"不校验合法域名"
+ */
+
+const http = require('http');
+const fs = require('fs');
+const path = require('path');
+
+// ============ 配置 ============
+const PORT = 3000;
+const DATA_DIR = path.join(__dirname, '..', 'health_data');
+
+// MySQL 配置
+const MYSQL_CONFIG = {
+  socketPath: '/var/run/mysqld/mysqld.sock',
+  user: 'root',
+  password: 'health123',
+  database: 'smart_followup_research',
+  waitForConnections: true,
+  connectionLimit: 10,
+  charset: 'utf8mb4'
+};
+
+// 默认患者和设备 ID（小程序未传递时使用）
+const DEFAULT_PATIENT_ID = 1;
+const DEFAULT_DEVICE_ID = 1;
+
+// ============ MySQL 连接池 ============
+let pool = null;
+let mysqlEnabled = false;
+
+try {
+  const mysql = require('mysql2/promise');
+  pool = mysql.createPool(MYSQL_CONFIG);
+  mysqlEnabled = true;
+  console.log('[MySQL] mysql2 已加载，数据库写入已启用');
+} catch (e) {
+  console.warn('[MySQL] mysql2 未安装，仅使用 JSON 文件存储');
+  console.warn('[MySQL] 安装命令: cd scripts && npm install mysql2');
+}
+
+// ============ 文件存储函数 ============
+
+function ensureDir(dirPath) {
+  if (!fs.existsSync(dirPath)) {
+    fs.mkdirSync(dirPath, { recursive: true });
+  }
+}
+
+function getTodayDate() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+}
+
+function getCurrentTimestamp() {
+  return new Date().toISOString();
+}
+
+function saveHealthDataToFile(dataType, data, date) {
+  const dateDir = path.join(DATA_DIR, date);
+  ensureDir(dateDir);
+
+  const filePath = path.join(dateDir, `${dataType}.json`);
+
+  let existingData = { date, records: [] };
+  if (fs.existsSync(filePath)) {
+    try {
+      existingData = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    } catch (e) {
+      console.error(`[文件] 读取失败: ${filePath}`, e.message);
+    }
+  }
+
+  const record = { timestamp: getCurrentTimestamp(), ...data };
+  existingData.records.push(record);
+
+  fs.writeFileSync(filePath, JSON.stringify(existingData, null, 2), 'utf8');
+  return { success: true, filePath, recordCount: existingData.records.length };
+}
+
+// ============ MySQL 写入函数 ============
+
+const DATA_TYPE_MAP = {
+  heartRate: { table: 'vital_heart_rate', type: 'direct' },
+  bloodOxygen: { table: 'vital_blood_oxygen', type: 'direct' },
+  bloodPressure: { table: 'vital_blood_pressure', type: 'direct' },
+  temperature: { table: 'vital_signs', type: 'json', dbType: 'temperature' },
+  bloodGlucose: { table: 'vital_signs', type: 'json', dbType: 'blood_glucose' },
+  sleep: { table: 'vital_signs', type: 'json', dbType: 'sleep' },
+  step: { table: 'vital_signs', type: 'json', dbType: 'step' },
+  ecg: { table: 'vital_signs', type: 'json', dbType: 'ecg' },
+  bloodLiquid: { table: 'vital_signs', type: 'json', dbType: 'blood_component' },
+  bodyComposition: { table: 'vital_signs', type: 'json', dbType: 'body_composition' },
+  daily: { table: 'vital_signs', type: 'json', dbType: 'daily' }
+};
+
+async function saveToMySQL(dataType, data, patientId, deviceId) {
+  if (!mysqlEnabled || !pool) return null;
+
+  const mapping = DATA_TYPE_MAP[dataType];
+  if (!mapping) {
+    console.warn(`[MySQL] 未知数据类型: ${dataType}`);
+    return null;
+  }
+
+  const pid = patientId || DEFAULT_PATIENT_ID;
+  const did = deviceId || DEFAULT_DEVICE_ID;
+  const now = new Date();
+
+  try {
+    let result;
+
+    if (mapping.type === 'direct') {
+      if (dataType === 'heartRate') {
+        const heartState = ['resting', 'active', 'sleeping', 'exercise'][data.heartState] || 'resting';
+        [result] = await pool.execute(
+          'INSERT INTO vital_heart_rate (patient_id, device_id, heart_rate, heart_state, recorded_at) VALUES (?, ?, ?, ?, ?)',
+          [pid, did, data.heartRate || 0, heartState, now]
+        );
+      } else if (dataType === 'bloodOxygen') {
+        [result] = await pool.execute(
+          'INSERT INTO vital_blood_oxygen (patient_id, device_id, spo2, recorded_at) VALUES (?, ?, ?, ?)',
+          [pid, did, data.bloodOxygen || 0, now]
+        );
+      } else if (dataType === 'bloodPressure') {
+        const riskLevel = classifyBPRisk(data.systolic, data.diastolic);
+        [result] = await pool.execute(
+          'INSERT INTO vital_blood_pressure (patient_id, device_id, systolic, diastolic, pulse_rate, risk_level, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+          [pid, did, data.systolic || 0, data.diastolic || 0, data.heartRate || null, riskLevel, now]
+        );
+      }
+    } else {
+      [result] = await pool.execute(
+        'INSERT INTO vital_signs (patient_id, device_id, data_type, vital_data, fhir_resource_type, recorded_at) VALUES (?, ?, ?, ?, ?, ?)',
+        [pid, did, mapping.dbType, JSON.stringify(data), 'Observation', now]
+      );
+    }
+
+    await pool.execute(
+      'INSERT INTO data_sync_logs (patient_id, device_id, sync_channel, data_types, records_count, fhir_validated, json_schema_valid, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      [pid, did, 'BLE_HTTPS', dataType, 1, 1, 1, 'success']
+    );
+
+    console.log(`[MySQL] ${dataType} → ${mapping.table} 写入成功 (id: ${result.insertId})`);
+    return { insertId: result.insertId, table: mapping.table };
+  } catch (err) {
+    console.error(`[MySQL] ${dataType} 写入失败:`, err.message);
+    try {
+      await pool.execute(
+        'INSERT INTO data_sync_logs (patient_id, device_id, sync_channel, data_types, records_count, fhir_validated, json_schema_valid, status, error_message) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [pid, did, 'BLE_HTTPS', dataType, 0, 0, 0, 'failed', err.message]
+      );
+    } catch (logErr) { /* ignore */ }
+    return null;
+  }
+}
+
+function classifyBPRisk(systolic, diastolic) {
+  if (!systolic || !diastolic) return 'normal';
+  if (systolic >= 180 || diastolic >= 120) return 'crisis';
+  if (systolic >= 140 || diastolic >= 90) return 'hypertension_2';
+  if (systolic >= 130 || diastolic >= 80) return 'hypertension_1';
+  if (systolic >= 120 && diastolic < 80) return 'elevated';
+  return 'normal';
+}
+
+// ============ 查询函数 ============
+
+async function queryMySQL(sql, params = []) {
+  if (!mysqlEnabled || !pool) {
+    return { error: 'MySQL 未启用，请安装 mysql2: npm install mysql2', data: [] };
+  }
+  try {
+    const [rows] = await pool.query(sql, params);
+    return { data: rows };
+  } catch (err) {
+    return { error: err.message, data: [] };
+  }
+}
+
+function buildTimeFilter(start, end) {
+  const conditions = [];
+  const params = [];
+  if (start) { conditions.push('recorded_at >= ?'); params.push(start); }
+  if (end) { conditions.push('recorded_at <= ?'); params.push(end); }
+  return { conditions, params };
+}
+
+function getAllFileData() {
+  const result = {};
+  if (!fs.existsSync(DATA_DIR)) return result;
+  const dates = fs.readdirSync(DATA_DIR).filter(f => fs.statSync(path.join(DATA_DIR, f)).isDirectory());
+  for (const date of dates) {
+    const dateDir = path.join(DATA_DIR, date);
+    result[date] = {};
+    for (const file of fs.readdirSync(dateDir).filter(f => f.endsWith('.json'))) {
+      try { result[date][file.replace('.json', '')] = JSON.parse(fs.readFileSync(path.join(dateDir, file), 'utf8')); }
+      catch (e) { /* skip */ }
+    }
+  }
+  return result;
+}
+
+function getFileDataByDate(date) {
+  const dateDir = path.join(DATA_DIR, date);
+  const result = { date, data: {} };
+  if (!fs.existsSync(dateDir)) return result;
+  for (const file of fs.readdirSync(dateDir).filter(f => f.endsWith('.json'))) {
+    try { result.data[file.replace('.json', '')] = JSON.parse(fs.readFileSync(path.join(dateDir, file), 'utf8')); }
+    catch (e) { /* skip */ }
+  }
+  return result;
+}
+
+function clearAllFileData() {
+  if (fs.existsSync(DATA_DIR)) fs.rmSync(DATA_DIR, { recursive: true, force: true });
+  ensureDir(DATA_DIR);
+  return { success: true, message: '所有文件数据已清除' };
+}
+
+function parseBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    req.on('data', chunk => { body += chunk.toString(); });
+    req.on('end', () => { try { resolve(body ? JSON.parse(body) : {}); } catch (e) { reject(new Error('Invalid JSON')); } });
+    req.on('error', reject);
+  });
+}
+
+// ============ HTTP 服务器 ============
+
+const server = http.createServer(async (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+
+  if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
+
+  const url = new URL(req.url, `http://localhost:${PORT}`);
+  const pathname = url.pathname;
+  console.log(`${new Date().toISOString()} ${req.method} ${pathname}`);
+
+  try {
+    // POST /api/health-data — 保存健康数据（小程序调用）
+    if (req.method === 'POST' && pathname === '/api/health-data') {
+      const body = await parseBody(req);
+      const { dataType, data, date, patientId, deviceId } = body;
+      if (!dataType || !data) { res.writeHead(400); res.end(JSON.stringify({ error: '缺少必要参数: dataType, data' })); return; }
+      const fileResult = saveHealthDataToFile(dataType, data, date || getTodayDate());
+      const mysqlResult = await saveToMySQL(dataType, data, patientId, deviceId);
+      res.writeHead(200);
+      res.end(JSON.stringify({ success: true, file: fileResult, mysql: mysqlResult ? { insertId: mysqlResult.insertId, table: mysqlResult.table } : null }));
+      return;
+    }
+
+    // GET /api/health-data — 获取文件数据
+    if (req.method === 'GET' && pathname === '/api/health-data') {
+      const date = url.searchParams.get('date');
+      res.writeHead(200);
+      res.end(JSON.stringify(date ? getFileDataByDate(date) : getAllFileData()));
+      return;
+    }
+
+    // DELETE /api/health-data — 清除文件数据
+    if (req.method === 'DELETE' && pathname === '/api/health-data') {
+      res.writeHead(200); res.end(JSON.stringify(clearAllFileData())); return;
+    }
+
+    // GET /api/vitals/heart-rate
+    if (req.method === 'GET' && pathname === '/api/vitals/heart-rate') {
+      const patientId = url.searchParams.get('patient_id');
+      const { start, end, limit } = getQueryParams(url);
+      let sql = 'SELECT h.*, p.name AS patient_name FROM vital_heart_rate h JOIN patients p ON h.patient_id = p.id WHERE 1=1';
+      const params = [];
+      if (patientId) { sql += ' AND h.patient_id = ?'; params.push(patientId); }
+      const tf = buildTimeFilter(start, end);
+      tf.conditions.forEach(c => { sql += ` AND h.${c}`; }); params.push(...tf.params);
+      sql += ' ORDER BY h.recorded_at DESC LIMIT ?'; params.push(limit);
+      res.writeHead(200); res.end(JSON.stringify(await queryMySQL(sql, params))); return;
+    }
+
+    // GET /api/vitals/blood-oxygen
+    if (req.method === 'GET' && pathname === '/api/vitals/blood-oxygen') {
+      const patientId = url.searchParams.get('patient_id');
+      const { start, end, limit } = getQueryParams(url);
+      let sql = 'SELECT b.*, p.name AS patient_name FROM vital_blood_oxygen b JOIN patients p ON b.patient_id = p.id WHERE 1=1';
+      const params = [];
+      if (patientId) { sql += ' AND b.patient_id = ?'; params.push(patientId); }
+      const tf = buildTimeFilter(start, end);
+      tf.conditions.forEach(c => { sql += ` AND b.${c}`; }); params.push(...tf.params);
+      sql += ' ORDER BY b.recorded_at DESC LIMIT ?'; params.push(limit);
+      res.writeHead(200); res.end(JSON.stringify(await queryMySQL(sql, params))); return;
+    }
+
+    // GET /api/vitals/blood-pressure
+    if (req.method === 'GET' && pathname === '/api/vitals/blood-pressure') {
+      const patientId = url.searchParams.get('patient_id');
+      const { start, end, limit } = getQueryParams(url);
+      let sql = 'SELECT bp.*, p.name AS patient_name FROM vital_blood_pressure bp JOIN patients p ON bp.patient_id = p.id WHERE 1=1';
+      const params = [];
+      if (patientId) { sql += ' AND bp.patient_id = ?'; params.push(patientId); }
+      const tf = buildTimeFilter(start, end);
+      tf.conditions.forEach(c => { sql += ` AND bp.${c}`; }); params.push(...tf.params);
+      sql += ' ORDER BY bp.recorded_at DESC LIMIT ?'; params.push(limit);
+      res.writeHead(200); res.end(JSON.stringify(await queryMySQL(sql, params))); return;
+    }
+
+    // GET /api/vitals/signs
+    if (req.method === 'GET' && pathname === '/api/vitals/signs') {
+      const patientId = url.searchParams.get('patient_id');
+      const dataType = url.searchParams.get('data_type');
+      const { start, end, limit } = getQueryParams(url);
+      let sql = 'SELECT v.*, p.name AS patient_name FROM vital_signs v JOIN patients p ON v.patient_id = p.id WHERE 1=1';
+      const params = [];
+      if (patientId) { sql += ' AND v.patient_id = ?'; params.push(patientId); }
+      if (dataType) { sql += ' AND v.data_type = ?'; params.push(dataType); }
+      const tf = buildTimeFilter(start, end);
+      tf.conditions.forEach(c => { sql += ` AND v.${c}`; }); params.push(...tf.params);
+      sql += ' ORDER BY v.recorded_at DESC LIMIT ?'; params.push(limit);
+      res.writeHead(200); res.end(JSON.stringify(await queryMySQL(sql, params))); return;
+    }
+
+    // GET /api/vitals/reports
+    if (req.method === 'GET' && pathname === '/api/vitals/reports') {
+      const patientId = url.searchParams.get('patient_id');
+      const reportType = url.searchParams.get('report_type');
+      const limit = parseInt(url.searchParams.get('limit')) || 50;
+      let sql = 'SELECT r.*, p.name AS patient_name FROM structured_reports r JOIN patients p ON r.patient_id = p.id WHERE 1=1';
+      const params = [];
+      if (patientId) { sql += ' AND r.patient_id = ?'; params.push(patientId); }
+      if (reportType) { sql += ' AND r.report_type = ?'; params.push(reportType); }
+      sql += ' ORDER BY r.generated_at DESC LIMIT ?'; params.push(limit);
+      res.writeHead(200); res.end(JSON.stringify(await queryMySQL(sql, params))); return;
+    }
+
+    // GET /api/patients
+    if (req.method === 'GET' && pathname === '/api/patients') {
+      res.writeHead(200);
+      res.end(JSON.stringify(await queryMySQL('SELECT p.*, c.cohort_name FROM patients p JOIN research_cohorts c ON p.cohort_id = c.id ORDER BY p.id')));
+      return;
+    }
+
+    // GET /api/devices
+    if (req.method === 'GET' && pathname === '/api/devices') {
+      res.writeHead(200);
+      res.end(JSON.stringify(await queryMySQL('SELECT d.*, p.name AS patient_name FROM medical_devices d LEFT JOIN patients p ON d.patient_id = p.id ORDER BY d.id')));
+      return;
+    }
+
+    // GET /api/vitals/summary
+    if (req.method === 'GET' && pathname === '/api/vitals/summary') {
+      res.writeHead(200);
+      res.end(JSON.stringify(await queryMySQL(`SELECT
+        (SELECT COUNT(*) FROM vital_heart_rate) AS heart_rate_count,
+        (SELECT COUNT(*) FROM vital_blood_oxygen) AS blood_oxygen_count,
+        (SELECT COUNT(*) FROM vital_blood_pressure) AS blood_pressure_count,
+        (SELECT COUNT(*) FROM vital_signs) AS vital_signs_count,
+        (SELECT COUNT(*) FROM data_sync_logs) AS sync_logs_count,
+        (SELECT COUNT(*) FROM structured_reports) AS reports_count,
+        (SELECT COUNT(*) FROM patients) AS patients_count,
+        (SELECT COUNT(*) FROM medical_devices) AS devices_count`)));
+      return;
+    }
+
+    // GET /api/status
+    if (req.method === 'GET' && pathname === '/api/status') {
+      res.writeHead(200);
+      res.end(JSON.stringify({ status: 'running', timestamp: getCurrentTimestamp(), mysqlEnabled, dataDir: DATA_DIR }));
+      return;
+    }
+
+    // GET /
+    if (req.method === 'GET' && pathname === '/') {
+      res.writeHead(200);
+      res.end(JSON.stringify({
+        message: '智能随访系统 — 健康数据服务器',
+        version: '2.0.0',
+        mysqlEnabled,
+        endpoints: {
+          'POST /api/health-data': '保存健康数据（小程序调用）',
+          'GET /api/health-data': '获取文件数据',
+          'GET /api/vitals/heart-rate': '心率 (?patient_id=&start=&end=&limit=)',
+          'GET /api/vitals/blood-oxygen': '血氧',
+          'GET /api/vitals/blood-pressure': '血压',
+          'GET /api/vitals/signs': '综合体征 (?data_type=temperature|blood_glucose|sleep|step|ecg|...)',
+          'GET /api/vitals/reports': '结构化报告',
+          'GET /api/vitals/summary': '数据总量统计',
+          'GET /api/patients': '受试者列表',
+          'GET /api/devices': '设备列表',
+          'GET /api/status': '服务器状态'
+        }
+      }));
+      return;
+    }
+
+    res.writeHead(404); res.end(JSON.stringify({ error: 'Not Found' }));
+  } catch (error) {
+    console.error('请求处理错误:', error);
+    res.writeHead(500); res.end(JSON.stringify({ error: error.message }));
+  }
+});
+
+function getQueryParams(url) {
+  return {
+    start: url.searchParams.get('start'),
+    end: url.searchParams.get('end'),
+    limit: parseInt(url.searchParams.get('limit')) || 100
+  };
+}
+
+ensureDir(DATA_DIR);
+
+server.listen(PORT, () => {
+  console.log('');
+  console.log('='.repeat(60));
+  console.log(' 智能随访系统 — 健康数据服务器 v2.0.0');
+  console.log('='.repeat(60));
+  console.log(`  地址: http://localhost:${PORT}`);
+  console.log(`  MySQL: ${mysqlEnabled ? '✅ 已启用' : '❌ 未启用 (npm install mysql2)'}`);
+  console.log('');
+  console.log('  写入: POST /api/health-data');
+  console.log('  拉取: GET /api/vitals/{heart-rate|blood-oxygen|blood-pressure|signs|reports|summary}');
+  console.log('  管理: GET /api/{patients|devices|status}');
+  console.log('='.repeat(60));
+});

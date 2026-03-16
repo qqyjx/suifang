@@ -1,5 +1,7 @@
 // pages/universalBlood/index.ts
 import { veepooBle, veepooFeature } from '../../miniprogram_dist/index'
+import { dataStorage } from '../../services/dataStorage'
+
 Page({
 
   /**
@@ -78,9 +80,9 @@ Page({
     }
     console.log("data=>", data)
     veepooFeature.veepooSendBloodOxygenAutoTestDataManager(data);
-    
+
   },
-  
+
   readAllDayTest(e: any) {
     let index = e.currentTarget.dataset.index
     let data = {
@@ -89,7 +91,7 @@ Page({
     }
     console.log("data==>",data)
     veepooFeature.veepooSendReadAllDayBloodOxygenDataManager(data);
-  }, 
+  },
 
   readTest() {
     let self = this;
@@ -125,6 +127,14 @@ Page({
         self.setData({
           device: e
         })
+
+        // 保存血氧数据
+        const bloodOxygenData = {
+          bloodOxygen: e.content?.bloodOxygen || 0,
+          heartRate: e.content?.heartRate || 0,
+          allDayData: e.content?.allDayData || []
+        }
+        dataStorage.saveData('bloodOxygen', bloodOxygenData)
       }
 
 

@@ -24,6 +24,10 @@ Component({
     connected: false,
     listDate: [
       {
+        name: '📊 数据管理',
+        path: '/pages/dataManagement/index'
+      },
+      {
         name: '切换服务',
         path: 'switchServices'
       },

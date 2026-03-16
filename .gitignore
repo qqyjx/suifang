@@ -51,3 +51,14 @@ coverage/       # 测试覆盖率报告
 # --- 其他临时文件 ---
 *.tmp           # 临时文件
 *.bak           # 备份文件
+
+# --- 运行时数据 ---
+health_data/    # 采集数据本地缓存（运行时生成）
+
+# --- Claude 工作文件 ---
+claude-progress.txt
+smoke-test.sh
+init.sh
+task.json
+features.json
+CLAUDE.md

@@ -2,6 +2,8 @@
 
 import { veepooBle, veepooFeature } from '../../miniprogram_dist/index'
 import { ab2hex } from '../../utils/util'
+import { dataStorage } from '../../services/dataStorage'
+
 let totalArray: any = []
 Page({
 
@@ -32,7 +34,7 @@ Page({
       diseaseResult: [0, 0, 0, 0, 0, 0, 0, 0]
     });
 
-    console.log('data==>',data);
+    console.log('data==>', data);
   },
   /**
    * 生命周期函数--监听页面显示
@@ -42,6 +44,7 @@ Page({
   },
   // 无参数
   ECGmeasureStartDataManager() {
+    totalArray = [] // 重置波形数据
     veepooFeature.veepooSendECGmeasureStartDataManager();
   },
   ECGmeasureStopDataManager() {
@@ -60,6 +63,16 @@ Page({
 
         if (e.progress == 100) {
           console.log("totalArray=>", totalArray)
+
+          // 保存ECG数据
+          const ecgData = {
+            heartRate: e.content?.heartRate || 0,
+            hrvValue: e.content?.hrvValue || 0,
+            diseaseResult: e.content?.diseaseResult || [],
+            ecgWaveform: totalArray,
+            measureDuration: e.content?.measureDuration || 0
+          }
+          dataStorage.saveData('ecg', ecgData)
         }
 
 

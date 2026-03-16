@@ -1,6 +1,8 @@
 // pages/sleep/index.js
 
 import { veepooBle, veepooFeature } from '../../miniprogram_dist/index'
+import { dataStorage } from '../../services/dataStorage'
+
 Page({
 
   /**
@@ -48,6 +50,17 @@ Page({
           self.setData({
             device: e
           })
+
+          // 保存睡眠数据
+          const sleepData = {
+            fallAsleepTime: e.content?.fallAsleepTime || '',
+            wakeUpTime: e.content?.wakeUpTime || '',
+            deepSleepTime: e.content?.deepSleepTime || 0,
+            lightSleepTime: e.content?.lightSleepTime || 0,
+            sleepQuality: e.content?.sleepQuality || 0,
+            sleepCurve: e.content?.sleepCurve || []
+          }
+          dataStorage.saveData('sleep', sleepData)
         }
       }
 

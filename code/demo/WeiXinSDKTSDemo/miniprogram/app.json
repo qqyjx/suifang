@@ -1,6 +1,7 @@
 {
   "pages": [
     "pages/index/index",
+    "pages/dataManagement/index",
     "pages/logs/logs",
     "pages/sleep/index",
     "pages/bleConnection/index",

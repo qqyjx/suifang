@@ -1,5 +1,7 @@
-// pages/universalBlood/index.ts
+// pages/bloodComponent/index.ts
 import { veepooBle, veepooFeature } from '../../miniprogram_dist/index'
+import { dataStorage } from '../../services/dataStorage'
+
 Page({
 
   /**
@@ -129,6 +131,18 @@ Page({
       self.setData({
         Blood: e
       })
+
+      // 保存血液成分数据
+      if (e.type == 39 || e.type == 40) {
+        const bloodLiquidData = {
+          uricAcid: e.content?.uricAcid || 0,
+          cholesterol: e.content?.cholesterol || 0,
+          triacylglycerol: e.content?.triacylglycerol || 0,
+          highDensity: e.content?.highDensity || 0,
+          lowDensity: e.content?.lowDensity || 0
+        }
+        dataStorage.saveData('bloodLiquid', bloodLiquidData)
+      }
     })
   },
 

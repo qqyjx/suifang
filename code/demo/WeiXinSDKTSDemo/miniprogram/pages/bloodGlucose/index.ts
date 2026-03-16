@@ -1,5 +1,7 @@
-// pages/universalBlood/index.ts
+// pages/bloodGlucose/index.ts
 import { veepooBle, veepooFeature } from '../../miniprogram_dist/index'
+import { dataStorage } from '../../services/dataStorage'
+
 Page({
 
   /**
@@ -72,7 +74,7 @@ Page({
 
   // 设置
   startBloodVerify() {
-    // 注意：每次发送都需要将血糖转换为 mmol/L   
+    // 注意：每次发送都需要将血糖转换为 mmol/L
     // mg/dl  转mmol/L 公式：血糖水平（mg/dl）= 血糖水平（mmol/L）× 18   血糖水平（mmol/L）= 血糖水平（mg/dl）/ 18
     let verifySwitch = this.data.verifySwitch;
     let data = {
@@ -95,7 +97,7 @@ Page({
     veepooFeature.veepooSendBloodGlucoseCalibrateModuleDataManager(data);
   },
   stopBloodSixVerify() {
-    /* 
+    /*
     beforeBreakfast
     afterBreakfast
     beforeLunch
@@ -186,6 +188,16 @@ Page({
         self.setData({
           bloodGlucoseData: e
         })
+
+        // 保存血糖数据
+        if (e.type == 37 || e.type == 38) {
+          const bloodGlucoseData = {
+            bloodGlucose: e.content?.bloodGlucose || 0,
+            measureTime: e.content?.measureTime || '',
+            unit: 'mmol/L'
+          }
+          dataStorage.saveData('bloodGlucose', bloodGlucoseData)
+        }
       }
     })
   },

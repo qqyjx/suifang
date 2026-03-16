@@ -1,5 +1,7 @@
 // pages/heartRateTest/index.ts
 import { veepooBle, veepooFeature } from '../../miniprogram_dist/index'
+import { dataStorage } from '../../services/dataStorage'
+
 Page({
 
   /**
@@ -39,6 +41,13 @@ Page({
         self.setData({
           heartRate:e.content.heartRate
         })
+
+        // 保存心率数据
+        const heartRateData = {
+          heartRate: e.content.heartRate || 0,
+          heartState: e.content.heartState || 0
+        }
+        dataStorage.saveData('heartRate', heartRateData)
       }
     })
   },

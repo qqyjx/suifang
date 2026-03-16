@@ -1,0 +1,22 @@
+{
+  "name": "health-data-server",
+  "version": "1.0.0",
+  "description": "健康数据 HTTP 同步服务器",
+  "main": "health-data-server.js",
+  "scripts": {
+    "start": "node health-data-server.js",
+    "dev": "node health-data-server.js"
+  },
+  "keywords": [
+    "health",
+    "data",
+    "sync",
+    "wechat",
+    "miniprogram"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "mysql2": "^3.19.1"
+  }
+}

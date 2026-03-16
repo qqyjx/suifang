@@ -1,5 +1,7 @@
 // pages/universalBlood/index.ts
 import { veepooBle, veepooFeature } from '../../miniprogram_dist/index'
+import { dataStorage } from '../../services/dataStorage'
+
 Page({
 
   /**
@@ -109,6 +111,15 @@ Page({
         self.setData({
           univerData: e
         })
+
+        // 保存血压数据
+        const bloodPressureData = {
+          systolic: e.content?.bloodPressureHigh || e.content?.systolic || 0,
+          diastolic: e.content?.bloodPressureLow || e.content?.diastolic || 0,
+          heartRate: e.content?.heartRate || 0,
+          measureStatus: e.content?.measureStatus || 0
+        }
+        dataStorage.saveData('bloodPressure', bloodPressureData)
       }
       if (e.type == 28) {
         self.setData({

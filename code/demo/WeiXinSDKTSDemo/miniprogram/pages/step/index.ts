@@ -1,6 +1,8 @@
 // pages/step/step.js
 
 import { veepooBle, veepooFeature } from '../../miniprogram_dist/index'
+import { dataStorage } from '../../services/dataStorage'
+
 Page({
 
   /**
@@ -33,7 +35,7 @@ Page({
 
     setTimeout(() => {
       this.readData(0);
-      
+
     }, 500);
 
   },
@@ -59,6 +61,14 @@ Page({
         self.setData({
           device: e.content
         })
+
+        // 保存步数数据
+        const stepData = {
+          step: e.content.step || 0,
+          calorie: e.content.calorie || 0,
+          distance: e.content.distance || 0
+        }
+        dataStorage.saveData('step', stepData)
       }
     })
   },
