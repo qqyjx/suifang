@@ -55,6 +55,9 @@ coverage/       # 测试覆盖率报告
 # --- 运行时数据 ---
 health_data/    # 采集数据本地缓存（运行时生成）
 
+# --- 敏感配置 ---
+scripts/remote-db-config.json  # 六元远程MySQL密码（不入库）
+
 # --- Claude 工作文件 ---
 claude-progress.txt
 smoke-test.sh

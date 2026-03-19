@@ -49,6 +49,87 @@ try {
   console.warn('[MySQL] 安装命令: cd scripts && npm install mysql2');
 }
 
+// ============ 六元远程 MySQL 连接池 ============
+let remotePool = null;
+let remoteEnabled = false;
+let remoteConfig = null;
+
+try {
+  const configPath = path.join(__dirname, 'remote-db-config.json');
+  if (fs.existsSync(configPath)) {
+    remoteConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    if (remoteConfig.enabled) {
+      const mysql = require('mysql2/promise');
+      remotePool = mysql.createPool({
+        host: remoteConfig.host,
+        port: remoteConfig.port,
+        user: remoteConfig.user,
+        password: remoteConfig.password,
+        database: remoteConfig.database,
+        waitForConnections: remoteConfig.waitForConnections,
+        connectionLimit: remoteConfig.connectionLimit,
+        charset: remoteConfig.charset,
+        connectTimeout: remoteConfig.connectTimeout
+      });
+      remotePool.getConnection()
+        .then(conn => { conn.release(); remoteEnabled = true; console.log('[六元MySQL] 连接成功 →', remoteConfig.host); })
+        .catch(err => { console.warn('[六元MySQL] 连接失败(可能不在公司网络):', err.message); });
+    }
+  }
+} catch (e) {
+  console.warn('[六元MySQL] 配置加载失败，远程同步已禁用:', e.message);
+}
+
+// ============ 六元远程 MySQL 写入 ============
+
+function toRemoteJSON(dataType, data) {
+  switch (dataType) {
+    case 'heartRate':
+      return { "心率": data.heartRate || 0, "心率状态": data.heartState || 0 };
+    case 'bloodOxygen':
+      return { "血氧": data.bloodOxygen || 0, "心率": data.heartRate || 0 };
+    case 'bloodPressure':
+      return { "高压": data.systolic || 0, "低压": data.diastolic || 0, "脉搏": data.heartRate || 0 };
+    case 'temperature':
+      return { "体温": data.temperature || 0, "皮肤温度": data.skinTemperature || 0 };
+    case 'bloodGlucose':
+      return { "血糖": data.bloodGlucose || 0, "餐态": data.mealState || 0 };
+    case 'ecg':
+      return { "心率": data.heartRate || 0, "心电波形": data.ecgWaveform || [], "诊断": data.diseaseResult || 0 };
+    case 'bloodLiquid':
+      return { "尿酸": data.uricAcid || 0, "胆固醇": data.cholesterol || 0, "甘油三酯": data.triacylglycerol || 0 };
+    case 'bodyComposition':
+      return { "体重": data.weight || 0, "BMI": data.bmi || 0, "体脂率": data.bodyFat || 0, "肌肉量": data.muscle || 0 };
+    case 'step':
+      return { "步数": data.step || 0, "卡路里": data.calorie || 0, "距离": data.distance || 0 };
+    case 'sleep':
+      return { "入睡时间": data.fallAsleepTime || "", "醒来时间": data.wakeUpTime || "", "深睡": data.deepSleepTime || 0, "浅睡": data.lightSleepTime || 0 };
+    case 'daily':
+      return { "类型": "daily", ...data };
+    default:
+      return data;
+  }
+}
+
+async function saveToRemoteMySQL(dataType, data, deviceId) {
+  if (!remoteEnabled || !remotePool || !remoteConfig) return null;
+
+  const jsonData = JSON.stringify(toRemoteJSON(dataType, data));
+  const did = deviceId || DEFAULT_DEVICE_ID;
+
+  try {
+    const [result] = await remotePool.execute(
+      `INSERT INTO \`${remoteConfig.dataTable}\` (设备id, 数据, 插入时间) VALUES (?, ?, NOW())`,
+      [did, jsonData]
+    );
+    console.log(`[六元MySQL] ${dataType} 写入成功 (id: ${result.insertId})`);
+    return { insertId: result.insertId };
+  } catch (err) {
+    console.error(`[六元MySQL] ${dataType} 写入失败:`, err.message);
+    return null;
+  }
+}
+
 // ============ 文件存储函数 ============
 
 function ensureDir(dirPath) {
@@ -259,8 +340,9 @@ const server = http.createServer(async (req, res) => {
       if (!dataType || !data) { res.writeHead(400); res.end(JSON.stringify({ error: '缺少必要参数: dataType, data' })); return; }
       const fileResult = saveHealthDataToFile(dataType, data, date || getTodayDate());
       const mysqlResult = await saveToMySQL(dataType, data, patientId, deviceId);
+      const remoteResult = await saveToRemoteMySQL(dataType, data, deviceId);
       res.writeHead(200);
-      res.end(JSON.stringify({ success: true, file: fileResult, mysql: mysqlResult ? { insertId: mysqlResult.insertId, table: mysqlResult.table } : null }));
+      res.end(JSON.stringify({ success: true, file: fileResult, mysql: mysqlResult ? { insertId: mysqlResult.insertId, table: mysqlResult.table } : null, remote: remoteResult }));
       return;
     }
 
@@ -376,7 +458,7 @@ const server = http.createServer(async (req, res) => {
     // GET /api/status
     if (req.method === 'GET' && pathname === '/api/status') {
       res.writeHead(200);
-      res.end(JSON.stringify({ status: 'running', timestamp: getCurrentTimestamp(), mysqlEnabled, dataDir: DATA_DIR }));
+      res.end(JSON.stringify({ status: 'running', timestamp: getCurrentTimestamp(), mysqlEnabled, remoteMySQL: { enabled: remoteEnabled, host: remoteConfig?.host || null, database: remoteConfig?.database || null }, dataDir: DATA_DIR }));
       return;
     }
 
@@ -427,9 +509,10 @@ server.listen(PORT, () => {
   console.log(' 智能随访系统 — 健康数据服务器 v2.0.0');
   console.log('='.repeat(60));
   console.log(`  地址: http://localhost:${PORT}`);
-  console.log(`  MySQL: ${mysqlEnabled ? '✅ 已启用' : '❌ 未启用 (npm install mysql2)'}`);
+  console.log(`  本地MySQL: ${mysqlEnabled ? '✅ 已启用' : '❌ 未启用 (npm install mysql2)'}`);
+  console.log(`  六元MySQL: ${remoteEnabled ? '✅ 已连接 → ' + remoteConfig.host : '⏳ 未连接(启动后异步检测)'}`);
   console.log('');
-  console.log('  写入: POST /api/health-data');
+  console.log('  写入: POST /api/health-data → 本地JSON + 本地MySQL + 六元MySQL');
   console.log('  拉取: GET /api/vitals/{heart-rate|blood-oxygen|blood-pressure|signs|reports|summary}');
   console.log('  管理: GET /api/{patients|devices|status}');
   console.log('='.repeat(60));
