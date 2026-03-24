@@ -20,8 +20,8 @@ import {
   DataFileContent
 } from '../types/healthData';
 
-// WSL HTTP服务器地址（开发时使用）
-const WSL_SERVER_URL = 'http://127.0.0.1:3000';
+// 生产环境：六元空间外网代理地址
+const WSL_SERVER_URL = 'https://dc.ncrc.org.cn/api2';
 
 // 数据存储根目录
 const DATA_ROOT = `${wx.env.USER_DATA_PATH}/health_data`;
