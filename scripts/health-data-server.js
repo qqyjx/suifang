@@ -80,50 +80,161 @@ try {
   console.warn('[六元MySQL] 配置加载失败，远程同步已禁用:', e.message);
 }
 
-// ============ 六元远程 MySQL 写入 ============
+// ============ 六元远程 MySQL 写入（一台设备一行 + 大JSON 汇总） ============
 
-function toRemoteJSON(dataType, data) {
-  switch (dataType) {
-    case 'heartRate':
-      return { "心率": data.heartRate || 0, "心率状态": data.heartState || 0 };
-    case 'bloodOxygen':
-      return { "血氧": data.bloodOxygen || 0, "心率": data.heartRate || 0 };
-    case 'bloodPressure':
-      return { "高压": data.systolic || 0, "低压": data.diastolic || 0, "脉搏": data.heartRate || 0 };
-    case 'temperature':
-      return { "体温": data.temperature || 0, "皮肤温度": data.skinTemperature || 0 };
-    case 'bloodGlucose':
-      return { "血糖": data.bloodGlucose || 0, "餐态": data.mealState || 0 };
-    case 'ecg':
-      return { "心率": data.heartRate || 0, "心电波形": data.ecgWaveform || [], "诊断": data.diseaseResult || 0 };
-    case 'bloodLiquid':
-      return { "尿酸": data.uricAcid || 0, "胆固醇": data.cholesterol || 0, "甘油三酯": data.triacylglycerol || 0 };
-    case 'bodyComposition':
-      return { "体重": data.weight || 0, "BMI": data.bmi || 0, "体脂率": data.bodyFat || 0, "肌肉量": data.muscle || 0 };
-    case 'step':
-      return { "步数": data.step || 0, "卡路里": data.calorie || 0, "距离": data.distance || 0 };
-    case 'sleep':
-      return { "入睡时间": data.fallAsleepTime || "", "醒来时间": data.wakeUpTime || "", "深睡": data.deepSleepTime || 0, "浅睡": data.lightSleepTime || 0 };
-    case 'daily':
-      return { "类型": "daily", ...data };
-    default:
-      return data;
-  }
+// 数据类型 → 中文键名映射（11 类，对应六元约定的中文字段）
+const TYPE_TO_CHINESE = {
+  heartRate:       '心率',
+  bloodOxygen:     '血氧',
+  bloodPressure:   '血压',
+  temperature:     '体温',
+  bloodGlucose:    '血糖',
+  bloodLiquid:     '血液成分',
+  bodyComposition: '身体成分',
+  ecg:             '心电',
+  step:            '步数',
+  sleep:           '睡眠',
+  daily:           '日综合'
+};
+
+// 血压风险分级（按 AHA 2017 标准）
+function classifyBPRisk(systolic, diastolic) {
+  if (systolic >= 180 || diastolic >= 120) return '危急';
+  if (systolic >= 140 || diastolic >= 90)  return '高血压2级';
+  if (systolic >= 130 || diastolic >= 80)  return '高血压1级';
+  if (systolic >= 120 && diastolic < 80)   return '偏高';
+  return '正常';
 }
 
+// 单条测量 → 中文字段记录（含采集时间）
+function toChineseRecord(dataType, data) {
+  let record = {};
+  switch (dataType) {
+    case 'heartRate':
+      record = { '心率值': data.heartRate || 0, '心率状态': data.heartState || 0 };
+      break;
+    case 'bloodOxygen':
+      record = { '血氧饱和度': data.bloodOxygen || 0, '心率': data.heartRate || 0 };
+      break;
+    case 'bloodPressure':
+      record = {
+        '高压': data.systolic || 0,
+        '低压': data.diastolic || 0,
+        '脉搏': data.heartRate || 0,
+        '风险等级': classifyBPRisk(data.systolic || 0, data.diastolic || 0)
+      };
+      break;
+    case 'temperature':
+      record = { '体温': data.temperature || 0, '皮肤温度': data.skinTemperature || 0 };
+      break;
+    case 'bloodGlucose':
+      record = { '血糖值_mmol_L': data.bloodGlucose || 0, '餐态': data.mealState || '' };
+      break;
+    case 'bloodLiquid':
+      record = {
+        '尿酸': data.uricAcid || 0,
+        '胆固醇': data.cholesterol || 0,
+        '甘油三酯': data.triacylglycerol || 0
+      };
+      break;
+    case 'bodyComposition':
+      record = {
+        '体重': data.weight || 0,
+        'BMI': data.bmi || 0,
+        '体脂率': data.bodyFat || 0,
+        '肌肉量': data.muscle || 0
+      };
+      break;
+    case 'ecg':
+      record = {
+        '心率': data.heartRate || 0,
+        '诊断': data.diseaseResult || '',
+        '波形采样点数': Array.isArray(data.ecgWaveform) ? data.ecgWaveform.length : 0
+      };
+      break;
+    case 'step':
+      record = {
+        '步数': data.step || 0,
+        '卡路里': data.calorie || 0,
+        '距离_米': data.distance || 0
+      };
+      break;
+    case 'sleep':
+      record = {
+        '入睡时间': data.fallAsleepTime || '',
+        '醒来时间': data.wakeUpTime || '',
+        '深睡_分钟': data.deepSleepTime || 0,
+        '浅睡_分钟': data.lightSleepTime || 0
+      };
+      break;
+    case 'daily':
+      record = { ...data };
+      break;
+    default:
+      record = { ...data };
+  }
+  record['采集时间'] = new Date().toISOString();
+  return record;
+}
+
+/**
+ * UPSERT：一台设备一行，新数据 push 到大 JSON 对应类型数组
+ * 流程：SELECT 现有行 → 解析大 JSON → push 新测量 → UPDATE 或 INSERT
+ */
 async function saveToRemoteMySQL(dataType, data, deviceId) {
   if (!remoteEnabled || !remotePool || !remoteConfig) return null;
 
-  const jsonData = JSON.stringify(toRemoteJSON(dataType, data));
+  const chineseKey = TYPE_TO_CHINESE[dataType];
+  if (!chineseKey) {
+    console.warn(`[六元MySQL] 未知数据类型: ${dataType}`);
+    return null;
+  }
+
   const did = deviceId || DEFAULT_DEVICE_ID;
+  const newRecord = toChineseRecord(dataType, data);
+  const tableName = remoteConfig.dataTable;
 
   try {
-    const [result] = await remotePool.execute(
-      `INSERT INTO \`${remoteConfig.dataTable}\` (设备id, 数据, 插入时间) VALUES (?, ?, NOW())`,
-      [did, jsonData]
+    // 1. 查现有行
+    const [rows] = await remotePool.execute(
+      `SELECT id, data FROM \`${tableName}\` WHERE deviceId = ? LIMIT 1`,
+      [did]
     );
-    console.log(`[六元MySQL] ${dataType} 写入成功 (id: ${result.insertId})`);
-    return { insertId: result.insertId };
+
+    // 2. 解析或初始化大 JSON
+    let bigJson = {};
+    if (rows.length > 0 && rows[0].data) {
+      try {
+        bigJson = JSON.parse(rows[0].data);
+      } catch (e) {
+        console.warn(`[六元MySQL] 旧 data 列 JSON 解析失败，重新初始化:`, e.message);
+        bigJson = {};
+      }
+    }
+
+    // 3. 追加新测量到对应类型数组
+    if (!Array.isArray(bigJson[chineseKey])) {
+      bigJson[chineseKey] = [];
+    }
+    bigJson[chineseKey].push(newRecord);
+
+    // 4. UPSERT
+    const bigJsonStr = JSON.stringify(bigJson);
+    if (rows.length > 0) {
+      await remotePool.execute(
+        `UPDATE \`${tableName}\` SET data = ?, createTime = NOW() WHERE id = ?`,
+        [bigJsonStr, rows[0].id]
+      );
+      console.log(`[六元MySQL] ${dataType} → ${chineseKey} UPDATE 成功 (设备 ${did}, 该类共 ${bigJson[chineseKey].length} 条)`);
+      return { deviceId: did, action: 'update', rowId: rows[0].id, type: chineseKey, count: bigJson[chineseKey].length };
+    } else {
+      const [result] = await remotePool.execute(
+        `INSERT INTO \`${tableName}\` (deviceId, data, createTime) VALUES (?, ?, NOW())`,
+        [did, bigJsonStr]
+      );
+      console.log(`[六元MySQL] ${dataType} → ${chineseKey} INSERT 成功 (设备 ${did}, 新行 id: ${result.insertId})`);
+      return { deviceId: did, action: 'insert', rowId: result.insertId, type: chineseKey, count: 1 };
+    }
   } catch (err) {
     console.error(`[六元MySQL] ${dataType} 写入失败:`, err.message);
     return null;
