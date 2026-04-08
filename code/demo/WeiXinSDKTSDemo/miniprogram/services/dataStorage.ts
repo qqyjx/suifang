@@ -210,7 +210,9 @@ class DataStorageService {
         data,
         date,
         patientId: 1,
-        deviceId: 1
+        // deviceId=4 预留给真机测试；demo 数据占用 1/2/3
+        // TODO: 后续按 BLE MAC 动态映射到实际设备 ID
+        deviceId: 4
       },
       success: (res) => {
         console.log(`[DataStorage] HTTP同步${type}成功:`, res.data);
