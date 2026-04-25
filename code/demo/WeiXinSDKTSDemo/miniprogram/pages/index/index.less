@@ -48,3 +48,16 @@ page {
 .active{
   color: #00b0fb;
 }
+
+// 体验版角标（services/env.ts 的 IS_TEST_BUILD 控制显隐；正式版前需关闭）
+.test-build-badge {
+  position: fixed;
+  top: 0;
+  right: 0;
+  z-index: 9999;
+  background: #ff9800;
+  color: #fff;
+  padding: 4rpx 12rpx;
+  font-size: 22rpx;
+  border-bottom-left-radius: 8rpx;
+}

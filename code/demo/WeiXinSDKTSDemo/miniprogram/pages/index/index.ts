@@ -4,6 +4,7 @@ import { veepooBle, veepooFeature } from '../../miniprogram_dist/index'
 import { veepooJLAuthenticationManager, veepooJLDisconnectDevice } from "../../jieli_sdk/index"
 import { BleDataHandler } from '../../jieli_sdk/lib/ble-data-handler';
 import { veepooJLBle } from "../../jieli_sdk/bleInit"
+import { ENV } from "../../services/env"
 // const vpJLBle = new veepooJLBle();
 //打印设置
 
@@ -22,6 +23,8 @@ Component({
     device: {},
     info: {},
     connected: false,
+    isTestBuild: ENV.IS_TEST_BUILD,
+    buildTag: ENV.BUILD_TAG,
     listDate: [
       {
         name: '📊 数据管理',
