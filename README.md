@@ -43,7 +43,7 @@
                                                               │ SQL INSERT
                                                  ┌────────────▼────────────┐
                                                  │  六元 MySQL              │
-                                                 │  192.168.4.222          │
+                                                 │  192.168.4.174          │
                                                  │  数据库: h6dp_suifang    │
                                                  │  ├ wearable_device (设备)│
                                                  │  └ wearable_device_data  │
@@ -62,7 +62,7 @@ https://dc.ncrc.org.cn/api2/api/health-data（六元外网代理）
     ↓ 反向代理
 公司服务器 192.168.4.104（Python HTTP :3000）
     ↓ SELECT-merge-UPSERT
-六元 MySQL 192.168.4.222 / h6dp_suifang / wearable_device_data
+六元 MySQL 192.168.4.174 / h6dp_suifang / wearable_device_data
 ```
 
 **各层职责**：
@@ -176,7 +176,7 @@ curl https://dc.ncrc.org.cn/api2/api/status
 
 ### 生产数据库（六元 MySQL）
 
-六元空间部署的 MySQL 数据库，服务器地址 `192.168.4.222`，数据库名 `h6dp_suifang`。
+六元空间部署的 MySQL 数据库，服务器地址 `192.168.4.174`，数据库名 `h6dp_suifang`。
 
 **wearable_device（设备表）**
 
