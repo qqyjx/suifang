@@ -19,16 +19,22 @@ import {
   HealthRecord,
   DataFileContent
 } from '../types/healthData';
+import { ENV } from './env';
 
-// 生产环境：六元空间外网代理地址
-const WSL_SERVER_URL = 'https://dc.ncrc.org.cn/api2';
+// 后端服务器地址（体验版/正式版统一从 services/env.ts 读取）
+const WSL_SERVER_URL = ENV.API_BASE;
 
 // 数据存储根目录
 const DATA_ROOT = `${wx.env.USER_DATA_PATH}/health_data`;
 
 class DataStorageService {
+  private static readonly PENDING_KEY = 'sync_pending_queue';
+  private static readonly MAX_QUEUE = 500;
+
   private fs: WechatMiniprogram.FileSystemManager;
   private httpEnabled: boolean = true;
+  // BLE 连接成功后由 resolveDeviceId() 异步填充，断开时由 resetDeviceIdCache() 清空
+  private deviceIdCache: number | null = null;
 
   constructor() {
     this.fs = wx.getFileSystemManager();
@@ -179,7 +185,7 @@ class DataStorageService {
 
     // 尝试同步到WSL HTTP服务器
     if (this.httpEnabled) {
-      this.syncToServer(type, record, dateStr);
+      void this.syncToServer(type, record, dateStr);
     }
 
     console.log(`[DataStorage] 保存${type}数据:`, localSaved ? '成功' : '失败');
@@ -199,28 +205,117 @@ class DataStorageService {
   }
 
   /**
-   * 同步数据到WSL HTTP服务器
+   * 同步数据到 HTTP 服务器
+   * 单次失败入 pending 队列；下次 onAppShow / 网络恢复时由 flushPending() 补传
    */
-  private syncToServer<T>(type: HealthDataType, data: T, date: string): void {
-    wx.request({
-      url: `${WSL_SERVER_URL}/api/health-data`,
-      method: 'POST',
-      data: {
-        dataType: type,
-        data,
-        date,
-        patientId: 1,
-        // deviceId=4 预留给真机测试；demo 数据占用 1/2/3
-        // TODO: 后续按 BLE MAC 动态映射到实际设备 ID
-        deviceId: 4
-      },
-      success: (res) => {
-        console.log(`[DataStorage] HTTP同步${type}成功:`, res.data);
-      },
-      fail: (err) => {
-        console.log(`[DataStorage] HTTP同步${type}失败(服务器可能未启动):`, err.errMsg);
-      }
+  private async syncToServer<T>(type: HealthDataType, data: T, date: string): Promise<void> {
+    const deviceId = await this.resolveDeviceId();
+    const payload = {
+      dataType: type,
+      data,
+      date,
+      // TODO(医生端集成): 当前医院手工绑定，由六元 patients 表管理
+      patientId: 1,
+      deviceId
+    };
+    try {
+      await this.postOnce(payload);
+      console.log(`[DataStorage] HTTP同步${type}成功 (deviceId=${deviceId})`);
+    } catch (err) {
+      console.log(`[DataStorage] HTTP同步${type}失败入队待补传:`, err);
+      this.enqueuePending(payload);
+    }
+  }
+
+  /**
+   * 包装 wx.request 为 Promise，2xx 成功，其他视为失败
+   */
+  private postOnce(payload: any): Promise<void> {
+    return new Promise((resolve, reject) => {
+      wx.request({
+        url: `${WSL_SERVER_URL}/api/health-data`,
+        method: 'POST',
+        data: payload,
+        success: (res: any) => {
+          if (res.statusCode >= 200 && res.statusCode < 300) resolve();
+          else reject(new Error(`HTTP ${res.statusCode}`));
+        },
+        fail: (err: any) => reject(new Error(err?.errMsg || 'wx.request fail'))
+      });
     });
+  }
+
+  /**
+   * 根据已连接 BLE 设备的 name + deviceId(MAC/UUID) 调用服务端 register，
+   * 取回真正的 deviceId 并缓存。BLE 未连或 register 失败时回退 4。
+   */
+  private async resolveDeviceId(): Promise<number> {
+    if (this.deviceIdCache !== null) return this.deviceIdCache;
+    const bleInfo: any = wx.getStorageSync('bleInfo');
+    if (!bleInfo || !bleInfo.deviceId) return 4;
+    const sign = `${bleInfo.name || 'unknown'}_${bleInfo.deviceId}`;
+    return new Promise((resolve) => {
+      wx.request({
+        url: `${WSL_SERVER_URL}/api/device/register`,
+        method: 'POST',
+        data: { deviceSign: sign, type: 1 },
+        success: (res: any) => {
+          const id = res?.data?.deviceId;
+          if (typeof id === 'number') {
+            this.deviceIdCache = id;
+            console.log(`[DataStorage] 设备解析成功: deviceId=${id} (${sign})`);
+            resolve(id);
+          } else {
+            console.warn('[DataStorage] register 返回无 deviceId，回退 4', res?.data);
+            resolve(4);
+          }
+        },
+        fail: (err: any) => {
+          console.warn('[DataStorage] register 调用失败，回退 4:', err?.errMsg);
+          resolve(4);
+        }
+      });
+    });
+  }
+
+  /**
+   * BLE 断开时由 bleConnection 页面调用，避免下个连接的表用了旧的 deviceId
+   */
+  public resetDeviceIdCache(): void {
+    this.deviceIdCache = null;
+  }
+
+  /**
+   * 失败的同步进队，超出 MAX_QUEUE 丢最旧的（LRU）
+   */
+  private enqueuePending(payload: any): void {
+    const queue: any[] = wx.getStorageSync(DataStorageService.PENDING_KEY) || [];
+    queue.push({ ...payload, _enqueuedAt: Date.now() });
+    if (queue.length > DataStorageService.MAX_QUEUE) {
+      queue.splice(0, queue.length - DataStorageService.MAX_QUEUE);
+    }
+    wx.setStorageSync(DataStorageService.PENDING_KEY, queue);
+  }
+
+  /**
+   * 把 pending 队列里所有未传成功的数据再发一遍，由 app.ts onAppShow / 网络恢复回调触发
+   */
+  public async flushPending(): Promise<{ ok: number; fail: number }> {
+    const queue: any[] = wx.getStorageSync(DataStorageService.PENDING_KEY) || [];
+    if (queue.length === 0) return { ok: 0, fail: 0 };
+    const remaining: any[] = [];
+    let ok = 0;
+    for (const item of queue) {
+      const { _enqueuedAt, ...payload } = item;
+      try {
+        await this.postOnce(payload);
+        ok++;
+      } catch {
+        remaining.push(item);
+      }
+    }
+    wx.setStorageSync(DataStorageService.PENDING_KEY, remaining);
+    return { ok, fail: remaining.length };
   }
 
   /**

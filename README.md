@@ -193,6 +193,29 @@ curl https://dc.ncrc.org.cn/api2/api/data
 curl https://dc.ncrc.org.cn/api2/api/status
 ```
 
+### 设备名册（wearable_device）
+
+#### POST /api/device/register
+
+按 `device_sign` UPSERT，已存在则返回现有 deviceId，不存在则 INSERT 一行并回传新 id。
+小程序在 BLE 密钥认证成功后自动调用，无需手工干预。
+
+```bash
+curl -X POST https://dc.ncrc.org.cn/api2/api/device/register \
+  -H "Content-Type: application/json" \
+  -d '{"deviceSign":"S101_FA:BA:94:8A:70:75","type":1}'
+# {"deviceId":4,"action":"created"}（首次）或 {"deviceId":4,"action":"existing"}（重连）
+```
+
+#### GET /api/device/by-sign
+
+只查不创建，运维核对用。
+
+```bash
+curl 'https://dc.ncrc.org.cn/api2/api/device/by-sign?sign=S101_FA:BA:94:8A:70:75'
+# {"id":4,"device_sign":"S101_FA:BA:94:8A:70:75","type":1}
+```
+
 ---
 
 ## 数据库设计
@@ -213,9 +236,13 @@ curl https://dc.ncrc.org.cn/api2/api/status
 
 | id | device_sign | type | 说明 |
 |----|-------------|------|------|
-| 1 | VP-W680_B8:27:EB:6A:F3:11 | 1 | 手表 1 号 |
-| 2 | VP-W680_B8:27:EB:9C:D7:4E | 1 | 手表 2 号 |
-| 3 | VP-W680_B8:27:EB:3B:A8:72 | 1 | 手表 3 号 |
+| 1 | VP-W680_B8:27:EB:6A:F3:11 | 1 | 手表 1 号（demo） |
+| 2 | VP-W680_B8:27:EB:9C:D7:4E | 1 | 手表 2 号（demo） |
+| 3 | VP-W680_B8:27:EB:3B:A8:72 | 1 | 手表 3 号（demo） |
+| 4 | S101_FA:BA:94:8A:70:75 | 1 | 真机测试 1 号（S101） |
+
+新增设备由小程序首次连上 BLE 后自动调 `POST /api/device/register` 注册——无需手工 SQL。
+device_sign 取值：`${BLE 设备名}_${平台 ID}`（Android=MAC，iOS=系统给的 UUID）。
 
 **wearable_device_data（数据表）**
 
@@ -460,6 +487,70 @@ await dataStorage.saveSleepData({ deepSleepMinutes: 120, lightSleepMinutes: 180 
 ```
 
 每个 JSON 文件包含当日该类型的所有采集记录。
+
+### 同步队列（断网重传）
+
+- 服务器 HTTP 同步失败时，整条 payload 进 `wx.storage` 的 `sync_pending_queue`（最多 500 条 LRU）
+- 触发刷队列：① App.onShow（回到前台）② `wx.onNetworkStatusChange` 网络从离线恢复
+- 实现位置：`services/dataStorage.ts:enqueuePending` / `flushPending` / `postOnce`
+
+---
+
+## 体验版 vs 正式版
+
+代码层用 `services/env.ts` 单一开关区分；下次正式上线前还需补隐私协议、医疗免责、微信审核。
+
+```ts
+// services/env.ts
+export const ENV = {
+  IS_TEST_BUILD: true,             // 体验版唯一开关，正式版改 false
+  BUILD_TAG: 'test-2026.04.27',
+  API_BASE: 'https://dc.ncrc.org.cn/api2',
+  SUPPORTED_DEVICE_PREFIXES: ['VP-', 'S101', 'VPR'],  // BLE 扫描白名单前缀
+  MIN_BLE_RSSI: -75,               // 弱信号过滤门槛
+};
+```
+
+| 影响范围 | 体验版 (`IS_TEST_BUILD=true`) | 正式版 (`false`) |
+|---|---|---|
+| 首页右上角橙色"测试版"角标 | 显示 | 隐藏 |
+| vConsole 调试面板 | 自动开启 | 关闭 |
+| 后端 API 地址 | 本字段统一 | 本字段统一 |
+
+**正式版打包流程**（待药监/法务评估完成后再做，本次不在范围）：
+1. `services/env.ts` 改 `IS_TEST_BUILD: false` + 更新 `BUILD_TAG`
+2. 补充 `pages/protocol/index`（用户协议）+ `pages/privacy/index`（隐私政策）
+3. `app.json` 加 `permission` 字段（蓝牙、定位授权说明）
+4. 微信开发者工具 → 上传 → 微信公众平台 → 提交审核（1-7 天）
+
+---
+
+## 交付与运营
+
+### 体验版交付物（4.27）
+
+详见 `docs/4.25plan.md` 的交付清单与发布 SOP（Step 10），以及 `docs/医院交付使用指南.md`。
+
+```
+医院 PM 收到三件套：
+1. 手表硬件      ← 由 Veepoo 厂家或医院自购
+2. 体验版二维码 (PNG)  ← 我们从微信公众平台导出
+3. 使用指南 (PDF)      ← docs/医院交付使用指南.md 导出
+```
+
+### 体验成员名单（≤ 100 人硬限制）
+
+微信小程序体验版**所有体验成员（含开发者）总计不能超过 100**。100+ 患者必须走正式版审核。
+
+加白名单 SOP（一次性手动操作）：
+1. 登录 https://mp.weixin.qq.com（AppID 主体微信号）
+2. 左侧菜单 → 管理 → 成员管理 → 体验成员 → 添加成员
+3. 输入要使用者的微信号（**不是手机号、不是姓名**）
+4. 对方微信会收到加入通知，扫体验版二维码即可使用
+
+### 受试者编号 ↔ 设备绑定（不归我们）
+
+当前 `services/dataStorage.ts:syncToServer` 把 `patientId` 硬编码为 1。受试者真实绑定关系由六元/医生端在 `patients` 表手工建立，本次小程序范围内不实现。详见 `docs/4.25plan.md` "交付窗口 + 已确认范围"。
 
 ---
 

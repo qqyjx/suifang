@@ -22,7 +22,9 @@ AMOLED 手表 ──BLE──→ 手机微信小程序 ──HTTPS──→ dc.n
 | 项 | 检查命令 | 期望 |
 |----|---------|------|
 | 六元 API 可达 | `curl -s https://dc.ncrc.org.cn/api2/api/status` | `"status":"running"` |
+| register API 已上线 | `curl -s https://dc.ncrc.org.cn/api2/ \| python3 -m json.tool \| grep device/register` | 命中 `POST /api/device/register` |
 | 3 台 demo 设备在 | `curl -s https://dc.ncrc.org.cn/api2/api/data \| python3 -c "import json,sys; print(json.load(sys.stdin)['count'])"` | `3` |
+| S101 已注册 | `curl -s 'https://dc.ncrc.org.cn/api2/api/device/by-sign?sign=S101_FA:BA:94:8A:70:75'` | 含 `"id":4` |
 | 手表已充电开机 | 看手表屏幕 | 显示时间 |
 | 手表未被其他 App 连 | 从其他设备断开蓝牙 | — |
 
@@ -146,6 +148,43 @@ bash scripts/watch-production-data.sh
 
 ---
 
+## Phase F：鲁棒性验证（4.27 体验版交付前必跑）
+
+> 在 D/E 数据类型打通后做。任何一条不过都不应交付。
+
+- [ ] **F1. 断网重传**
+  - 测心率前手机切飞行模式
+  - 在心率页测一组数据
+  - vConsole 期望看到：`HTTP同步heartRate失败入队待补传`
+  - 关闭飞行模式，等 5-10 秒
+  - vConsole 期望看到：`[Sync] 网络恢复补传 {ok: 1, fail: 0}`
+  - 服务器 `bash scripts/watch-production-data.sh` 看到该组心率到达
+- [ ] **F2. 蓝牙断线自动重连**
+  - 连接成功后让手表远离手机 5 米至断线（或关手表蓝牙）
+  - vConsole 期望看到：`[AutoReconnect] result=>` 后跟一个失败结果
+  - 让手表再次靠近 / 重开手表蓝牙
+  - 数秒内 vConsole 显示连接成功，无需用户手动操作
+- [ ] **F3. App.onShow 自动重连**
+  - 连接状态下退出小程序到桌面
+  - 锁屏 1 分钟后再唤醒，重开小程序
+  - vConsole 期望看到：`[App.onShow] 自动重连=>`
+  - 不需要进连接页就能继续测心率
+- [ ] **F4. 扫描白名单过滤**
+  - 在公司同时打开多个非 Veepoo 蓝牙设备（手环 / AirPods / 其他厂商手表）
+  - 进入连接页扫描
+  - 列表只显示 `S101` / `VP-` / `VPR` 开头且 RSSI≥-75 的设备
+- [ ] **F5. 扫描 30s 自动停止**
+  - 进入连接页不点任何东西
+  - 30 秒后自动弹出 toast `扫描结束，未找到请重试`
+
+## Phase G：体验版/正式版区分（仅体验版交付时跑）
+
+- [ ] **G1.** 编译运行：首页右上角显示橙色「测试版 test-2026.04.27」角标
+- [ ] **G2.** 真机预览：vConsole 调试面板**自动开启**（不需要在开发者工具勾选）
+- [ ] **G3.** 切换试跑（不发布）：临时把 `services/env.ts` 改 `IS_TEST_BUILD: false` → 重新编译 → 角标消失、vConsole 关闭；改回 true 提交
+
+---
+
 ## 故障排查
 
 ### 小程序报 "request:fail url not in domain list"
@@ -186,10 +225,11 @@ bash scripts/watch-production-data.sh
 
 ## 打通后的下一步
 
-1. **动态 deviceId 映射**：读取 BLE 连接时的 MAC 地址，查六元 `wearable_device` 表反查 deviceId，不再硬编码
-2. **断网重传**：当前 HTTP POST 失败就丢了，需要加本地队列 + 重传逻辑
-3. **合法域名上架**：小程序正式发布前，把 `dc.ncrc.org.cn` 加到微信公众平台后台的合法 request 域名
+1. ✅ **动态 deviceId 映射**：已实现 —— `services/dataStorage.ts:resolveDeviceId()` 在 BLE 连接后调 `POST /api/device/register` 取 deviceId
+2. ✅ **断网重传**：已实现 —— `enqueuePending` + `flushPending`，触发点：onShow / 网络恢复
+3. **合法域名上架**：小程序正式发布前，把 `dc.ncrc.org.cn` 加到微信公众平台后台的合法 request 域名（详见 `docs/4.25plan.md` Step 10.1）
 4. **数据校验**：血压/心率等值的合理性检查（如血压 < 60/40 或 > 250/180 拒绝入库）
+5. **受试者编号 ↔ deviceId 绑定**：当前 `patientId` 硬编码为 1；正式上线前由六元/医生端建立映射
 
 ---
 

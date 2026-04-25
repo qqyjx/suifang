@@ -1,5 +1,9 @@
 // pages/bleConnection/index.ts
 import { veepooBle, veepooFeature } from '../../miniprogram_dist/index'
+import { dataStorage } from '../../services/dataStorage'
+import { ENV } from '../../services/env'
+
+const SCAN_TIMEOUT_MS = 30000
 
 
 
@@ -18,6 +22,8 @@ Page({
     isIOS: false
   },
 
+  scanTimer: 0 as any,
+
   /**
    * 生命周期函数--监听页面加载
    */
@@ -34,6 +40,8 @@ Page({
       }
     });
     this.veepooSDKGetSetting()
+    // 挂载断线监听（连接成功后，掉线时自动重连 + 清 deviceId 缓存）
+    this.BLEConnectionStateChange()
   },
 
   /**
@@ -51,6 +59,11 @@ Page({
   },
   onHide() {
     this.StopSearchBleManager()
+    if (this.scanTimer) { clearTimeout(this.scanTimer); this.scanTimer = 0 }
+  },
+
+  onUnload() {
+    if (this.scanTimer) { clearTimeout(this.scanTimer); this.scanTimer = 0 }
   },
 
   veepooSDKGetSetting() {
@@ -58,12 +71,26 @@ Page({
     let arr: any = []
     // 获取手机设置状态
     veepooBle.veepooWeiXinSDKStartScanDeviceAndReceiveScanningDevice(function (res: any) {
-      console.log('res=>', res)
-      arr.push(res[0]);
+      const device = res && res[0]
+      if (!device || !device.name) return
+      // 过滤 1：弱信号（医院 100 表场景，避免列出隔壁房间的）
+      if (typeof device.RSSI === 'number' && device.RSSI < ENV.MIN_BLE_RSSI) return
+      // 过滤 2：设备名前缀白名单（VP-W680 / S101 / VPR04 等兼容机型）
+      const matched = ENV.SUPPORTED_DEVICE_PREFIXES.some(p => device.name.startsWith(p))
+      if (!matched) return
+      // 同 deviceId 去重（SDK 可能重复回调）
+      if (arr.find((d: any) => d.deviceId === device.deviceId)) return
+      arr.push(device)
       self.setData({
         bleList: arr.sort((a: any, b: any) => b.RSSI - a.RSSI)
       })
     })
+    // 扫描超时自动停止（防患者放下手机后扫描跑一夜耗电）
+    if (this.scanTimer) clearTimeout(this.scanTimer)
+    this.scanTimer = setTimeout(() => {
+      self.StopSearchBleManager()
+      wx.showToast({ title: '扫描结束，未找到请重试', icon: 'none' })
+    }, SCAN_TIMEOUT_MS)
   },
 
   connectionDevice(e: any) {
@@ -214,10 +241,23 @@ Page({
       self.bleDataParses(e)
     })
   },
-  // 蓝牙断开监听
+  // 蓝牙连接状态变化监听（断开时清缓存 + 触发自动重连）
   BLEConnectionStateChange() {
+    let self = this;
     veepooBle.veepooWeiXinSDKBLEConnectionStateChangeManager(function (e: any) {
-      console.log("蓝牙断开=>", e)
+      console.log("蓝牙连接状态变化=>", e)
+      if (e && e.connected === false) {
+        dataStorage.resetDeviceIdCache()
+        self.tryAutoReconnect()
+      }
+    })
+  },
+  // 断线后自动重连（一次性尝试，失败则等用户手动操作）
+  tryAutoReconnect() {
+    const bleInfo: any = wx.getStorageSync('bleInfo')
+    if (!bleInfo || !bleInfo.deviceId) return
+    veepooBle.veepooWeiXinSDKBleReconnectDeviceManager(bleInfo, function (result: any) {
+      console.log('[AutoReconnect] result=>', result)
     })
   },
   // 停止蓝牙搜索

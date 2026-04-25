@@ -1,4 +1,5 @@
 <view class="main-box">
+  <view wx:if="{{isTestBuild}}" class="test-build-badge">测试版 {{buildTag}}</view>
   <view class="top-buttom">
     <view class="buttom" catch:tap="skipDeviceGet">设备扫描</view>
     <view class="buttom buttom-active {{ connected ? 'active' : '' }}" catch:tap="closeBluetoothAdapterManager">断开连接</view>

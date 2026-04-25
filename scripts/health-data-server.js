@@ -457,6 +457,40 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    // POST /api/device/register — 按 device_sign UPSERT 到六元 wearable_device，返回 deviceId
+    // 小程序首次连上 BLE 后调用，把 `name_<MAC|UUID>` 上报，服务端确保有一行并回传 id。
+    if (req.method === 'POST' && pathname === '/api/device/register') {
+      const body = await parseBody(req);
+      const { deviceSign, type } = body;
+      if (!deviceSign) { res.writeHead(400); res.end(JSON.stringify({ error: '缺少 deviceSign' })); return; }
+      if (!remoteEnabled || !remotePool) { res.writeHead(503); res.end(JSON.stringify({ error: '六元MySQL 未连接' })); return; }
+      const [rows] = await remotePool.execute(
+        'SELECT id FROM wearable_device WHERE device_sign = ? LIMIT 1', [deviceSign]
+      );
+      if (rows.length > 0) {
+        res.writeHead(200); res.end(JSON.stringify({ deviceId: rows[0].id, action: 'existing' })); return;
+      }
+      const [r] = await remotePool.execute(
+        'INSERT INTO wearable_device (device_sign, type) VALUES (?, ?)', [deviceSign, type || 1]
+      );
+      console.log(`[设备注册] 新增 wearable_device: id=${r.insertId} sign=${deviceSign} type=${type || 1}`);
+      res.writeHead(200); res.end(JSON.stringify({ deviceId: r.insertId, action: 'created' }));
+      return;
+    }
+
+    // GET /api/device/by-sign?sign=... — 只查不创建（运维核对用）
+    if (req.method === 'GET' && pathname === '/api/device/by-sign') {
+      const sign = url.searchParams.get('sign');
+      if (!sign) { res.writeHead(400); res.end(JSON.stringify({ error: '缺少 sign' })); return; }
+      if (!remoteEnabled || !remotePool) { res.writeHead(503); res.end(JSON.stringify({ error: '六元MySQL 未连接' })); return; }
+      const [rows] = await remotePool.execute(
+        'SELECT id, device_sign, type FROM wearable_device WHERE device_sign = ? LIMIT 1', [sign]
+      );
+      res.writeHead(200);
+      res.end(JSON.stringify(rows.length > 0 ? rows[0] : { error: 'not found' }));
+      return;
+    }
+
     // GET /api/health-data — 获取文件数据
     if (req.method === 'GET' && pathname === '/api/health-data') {
       const date = url.searchParams.get('date');
@@ -583,6 +617,8 @@ const server = http.createServer(async (req, res) => {
         endpoints: {
           'POST /api/health-data': '保存健康数据（小程序调用）',
           'GET /api/health-data': '获取文件数据',
+          'POST /api/device/register': '按 device_sign UPSERT 到 wearable_device 并返回 deviceId',
+          'GET /api/device/by-sign': '按 sign 查 wearable_device（?sign=）',
           'GET /api/vitals/heart-rate': '心率 (?patient_id=&start=&end=&limit=)',
           'GET /api/vitals/blood-oxygen': '血氧',
           'GET /api/vitals/blood-pressure': '血压',
