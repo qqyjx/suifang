@@ -93,7 +93,7 @@ Page({
     let arr: any = []
     self.scanSeenCount = 0
     self.scanMatchedCount = 0
-    self.setData({ statusText: '扫描中…', bleList: [] })
+    self.setData({ statusText: '正在搜索附近的设备…', bleList: [] })
     // 获取手机设置状态
     veepooBle.veepooWeiXinSDKStartScanDeviceAndReceiveScanningDevice(function (res: any) {
       const device = res && res[0]
@@ -131,23 +131,19 @@ Page({
     this.scanTimer = setTimeout(() => {
       self.StopSearchBleManager()
       const tip = self.scanSeenCount === 0
-        ? '未发现任何蓝牙广播。常见原因：手表已被其他 App 占用 / iOS 蓝牙权限未授 / 手表未进入配对模式'
-        : `已发现 ${self.scanSeenCount} 个设备，但无匹配机型`
+        ? '未找到设备，请确认手表已开机且蓝牙已开启'
+        : '附近无可连接的设备'
       self.setData({ statusText: tip })
       wx.showToast({ title: tip, icon: 'none' })
     }, SCAN_TIMEOUT_MS)
   },
 
-  // 状态行：体验版多打"已发现/匹配"细节，正式版只显示简短状态
+  // 状态行：用户面向语言，调试细节走 vConsole
   refreshStatus(listLen: number) {
-    if (ENV.IS_TEST_BUILD) {
-      this.setData({
-        statusText: `扫描中… 已发现 ${this.scanSeenCount} 个，匹配 ${this.scanMatchedCount} 个，列表 ${listLen} 项`
-      })
-    } else if (listLen === 0) {
-      this.setData({ statusText: '扫描中…' })
-    } else {
+    if (listLen > 0) {
       this.setData({ statusText: '' })
+    } else {
+      this.setData({ statusText: '正在搜索附近的设备…' })
     }
   },
 

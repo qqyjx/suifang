@@ -1,12 +1,5 @@
 <view>
   <view wx:if="{{statusText}}" class="scan-status">{{statusText}}</view>
-  <view wx:if="{{isTestBuild && bleList.length === 0}}" class="scan-hint">
-    体验版：已绕过设备名白名单。若一直空白，请依次排查：
-    {"\n"}1. 手表是否已被其他 App（G band / Veepoo）占用？需先在那边断开/退出/关掉自动连接
-    {"\n"}2. iOS 设置 → 微信 → 蓝牙是否已授权
-    {"\n"}3. 手表是否处于配对模式（必要时长按按键或重启手表）
-    {"\n"}4. vConsole Log 中查 [BLE scan] / [BLE raw found] 日志
-  </view>
   <view wx:for="{{bleList}}" wx:key="index" class="device-ios" catch:tap="connectBle" data-name="{{item.name}}" data-deviceid="{{item.deviceId}}">
     <view class="device-ios-item">
       <view class="deviceNane">名称：{{item.name}}</view>
