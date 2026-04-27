@@ -1,0 +1,11 @@
+{
+  "date": "2026-03-19",
+  "records": [
+    {
+      "timestamp": "2026-03-19T06:28:04.660Z",
+      "systolic": 140,
+      "diastolic": 90,
+      "heartRate": 50
+    }
+  ]
+}

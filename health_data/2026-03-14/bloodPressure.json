@@ -1,0 +1,17 @@
+{
+  "date": "2026-03-14",
+  "records": [
+    {
+      "timestamp": "2026-03-14T10:19:56.447Z",
+      "systolic": 125,
+      "diastolic": 82,
+      "pulseRate": 70
+    },
+    {
+      "timestamp": "2026-03-14T10:24:33.130Z",
+      "systolic": 125,
+      "diastolic": 82,
+      "pulseRate": 70
+    }
+  ]
+}

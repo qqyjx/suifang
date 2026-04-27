@@ -1,0 +1,15 @@
+{
+  "date": "2026-03-14",
+  "records": [
+    {
+      "timestamp": "2026-03-14T10:19:56.205Z",
+      "heartRate": 75,
+      "heartState": 0
+    },
+    {
+      "timestamp": "2026-03-14T10:24:33.048Z",
+      "heartRate": 75,
+      "heartState": 0
+    }
+  ]
+}

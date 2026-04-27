@@ -201,20 +201,15 @@ Page({
               veepooFeature.veepooBlePasswordCheckManager();
             }, 500);
 
-            // 轮询等 SDK 密钥核准把 deviceChipStatus 写好后跳首页.
-            // BLE 物理通道在 result.connection=true 时已通, MTU 协商也已完成,
-            // 但 SDK 私有协议层完成密钥核准的时间不固定 (实测有时 > 10s).
-            // 不再加 10s 超时模态打断用户, 让密钥核准走完即跳首页;
-            // 用户嫌慢可自己按系统返回键退出.
-            let times = setInterval(() => {
-              const deviceChipStatus = wx.getStorageSync('deviceChipStatus');
-              console.log("deviceChipStatus===>", deviceChipStatus);
-              if (deviceChipStatus) {
-                wx.hideLoading();
-                clearInterval(times);
-                wx.redirectTo({ url: '/pages/index/index' });
-              }
-            }, 1000);
+            // result.connection=true 已表示 BLE 物理通道+特征值订阅都已就绪,
+            // MTU 协商和密钥核准 setTimeout 已发出, 后续 SDK 回调由 BleHub 全局接收.
+            // 不再轮询 deviceChipStatus: 该 key 仅在中科芯片 (chip==3) 时被 SDK 写入,
+            // 杰理/炬芯/Nordic 设备 (含 S101) 永远拿不到 -> setInterval 永等卡死.
+            // 给密钥核准 + MTU 留 2.5s 缓冲后直接跳首页, 数据通道已由 BleHub 接管.
+            setTimeout(() => {
+              wx.hideLoading();
+              wx.redirectTo({ url: '/pages/index/index' });
+            }, 2500);
           }
 
 

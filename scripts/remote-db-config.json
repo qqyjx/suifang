@@ -1,0 +1,14 @@
+{
+  "host": "192.168.4.174",
+  "port": 3306,
+  "user": "developer",
+  "password": "DePer!$12967",
+  "database": "h6dp_suifang",
+  "waitForConnections": true,
+  "connectionLimit": 5,
+  "charset": "utf8mb4",
+  "connectTimeout": 5000,
+  "enabled": true,
+  "deviceTable": "wa_device",
+  "dataTable": "wa_data"
+}

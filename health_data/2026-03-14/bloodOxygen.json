@@ -1,0 +1,13 @@
+{
+  "date": "2026-03-14",
+  "records": [
+    {
+      "timestamp": "2026-03-14T10:19:56.363Z",
+      "bloodOxygen": 98
+    },
+    {
+      "timestamp": "2026-03-14T10:24:33.107Z",
+      "bloodOxygen": 98
+    }
+  ]
+}

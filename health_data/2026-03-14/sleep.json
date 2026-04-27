@@ -1,0 +1,11 @@
+{
+  "date": "2026-03-14",
+  "records": [
+    {
+      "timestamp": "2026-03-14T10:24:44.940Z",
+      "deepSleep": 120,
+      "lightSleep": 240,
+      "totalSleep": 360
+    }
+  ]
+}

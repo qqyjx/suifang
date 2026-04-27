@@ -1,9 +1,9 @@
 {
   "description": "项目私有配置文件。此文件中的内容将覆盖 project.config.json 中的相同字段。项目的改动优先同步到此文件中。详见文档：https://developers.weixin.qq.com/miniprogram/dev/devtools/projectconfig.html",
-  "projectname": "WeiXinSDKTSDemo",
+  "projectname": "%E6%99%BA%E8%83%BD%E9%9A%8F%E8%AE%BF%E4%BD%93%E9%AA%8C%E7%89%88",
   "setting": {
     "compileHotReLoad": true,
-    "urlCheck": true,
+    "urlCheck": false,
     "bigPackageSizeSupport": true,
     "coverView": false,
     "lazyloadPlaceholderEnable": false,
@@ -20,58 +20,5 @@
     "ignoreDevUnusedFiles": true
   },
   "libVersion": "3.8.9",
-  "condition": {
-    "miniprogram": {
-      "list": [
-        {
-          "name": "pages/4GService/Index",
-          "pathName": "pages/4GService/Index",
-          "query": "",
-          "scene": null,
-          "launchMode": "default"
-        },
-        {
-          "name": "pages/syncTime/index",
-          "pathName": "pages/syncTime/index",
-          "query": "",
-          "launchMode": "default",
-          "scene": null
-        },
-        {
-          "name": "pages/index/index",
-          "pathName": "pages/index/index",
-          "query": "",
-          "launchMode": "default",
-          "scene": null,
-          "partialCompile": {
-            "enabled": false,
-            "pages": [
-              "pages/syncTime/index"
-            ]
-          }
-        },
-        {
-          "name": "pages/ecgTest/index",
-          "pathName": "pages/ecgTest/index",
-          "query": "",
-          "launchMode": "default",
-          "scene": null
-        },
-        {
-          "name": "pages/JH58/index",
-          "pathName": "pages/JH58/index",
-          "query": "",
-          "launchMode": "default",
-          "scene": null
-        },
-        {
-          "name": "pages/xdt/index",
-          "pathName": "pages/xdt/index",
-          "query": "",
-          "launchMode": "default",
-          "scene": null
-        }
-      ]
-    }
-  }
+  "condition": {}
 }
