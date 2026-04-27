@@ -5,6 +5,7 @@ import { veepooJLAuthenticationManager, veepooJLDisconnectDevice } from "../../j
 import { BleDataHandler } from '../../jieli_sdk/lib/ble-data-handler';
 import { veepooJLBle } from "../../jieli_sdk/bleInit"
 import { ENV } from "../../services/env"
+import { dispatchBleData } from "../../services/bleDispatcher"
 // const vpJLBle = new veepooJLBle();
 //打印设置
 
@@ -630,6 +631,9 @@ Component({
         let type = value.content.customDialType
         wx.setStorageSync('customType', type)
       }
+      // 全局兜底：手表本机自测数据（血压/血氧/体温/血糖/血液成分/身体成分等）
+      // 患者不会进对应功能 page，需要在默认停留页落库 + 上传六元数据库
+      dispatchBleData(value)
     }
   },
 })
