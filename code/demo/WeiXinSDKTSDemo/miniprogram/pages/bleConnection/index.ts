@@ -39,9 +39,30 @@ Page({
     } catch (e) {
       console.warn('[bleConnection] getDeviceInfo failed, fallback skipped:', e)
     }
+    // 体验版下挂原生 onBluetoothDeviceFound 旁路监听，与 SDK 回调对照诊断
+    if (ENV.IS_TEST_BUILD) this.attachRawBleDiagnostics()
     this.veepooSDKGetSetting()
     // 挂载断线监听（连接成功后，掉线时自动重连 + 清 deviceId 缓存）
     this.BLEConnectionStateChange()
+  },
+
+  // 体验版诊断：直接挂微信原生 onBluetoothDeviceFound + adapterState
+  // 区分 "SDK 回调没触发" vs "微信原生层就没结果"（多半是被其他 App 占用 / iOS 权限拒绝）
+  attachRawBleDiagnostics() {
+    try {
+      wx.onBluetoothAdapterStateChange((res: any) => {
+        console.log('[BLE raw adapter]', JSON.stringify(res))
+      })
+      wx.onBluetoothDeviceFound((res: any) => {
+        const ds = res && res.devices || []
+        ds.forEach((d: any) => {
+          console.log('[BLE raw found]', d.name || d.localName || '(无名)',
+            'RSSI=', d.RSSI, 'id=', d.deviceId)
+        })
+      })
+    } catch (e) {
+      console.warn('[bleConnection] raw diagnostics attach failed:', e)
+    }
   },
 
   /**
@@ -109,7 +130,7 @@ Page({
     this.scanTimer = setTimeout(() => {
       self.StopSearchBleManager()
       const tip = self.scanSeenCount === 0
-        ? '未发现任何蓝牙广播，请确认手表已开机且蓝牙已开启'
+        ? '未发现任何蓝牙广播。常见原因：手表已被其他 App 占用 / iOS 蓝牙权限未授 / 手表未进入配对模式'
         : `已发现 ${self.scanSeenCount} 个设备，但无匹配机型`
       self.setData({ statusText: tip })
       wx.showToast({ title: tip, icon: 'none' })
