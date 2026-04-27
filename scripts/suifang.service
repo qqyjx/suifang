@@ -1,0 +1,19 @@
+[Unit]
+Description=Suifang Health Data Server
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/suifang
+# 必须用 miniconda 的 python3.8（装了 pymysql 1.4.6）
+# /usr/bin/python3 是 3.6，没装 pymysql；且 systemd 不加载 root 的 PATH，
+# 所以不能依赖 PATH 解析，用绝对路径
+# CentOS 7 的 systemd 219 不支持 StandardOutput=append:/...（240+ 才有），
+# 用 /bin/sh -c 包一层做重定向，并 exec 替换让 systemd 直接管 python 进程
+ExecStart=/bin/sh -c 'exec /root/miniconda3/bin/python3 /opt/suifang/health_server.py >> /opt/suifang/server.log 2>&1'
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
