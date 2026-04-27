@@ -14,7 +14,7 @@
  */
 export const ENV = {
   IS_TEST_BUILD: true,
-  BUILD_TAG: 'test-2026.04.27-v3',
+  BUILD_TAG: 'test-2026.04.27-v4',
   API_BASE: 'https://dc.ncrc.org.cn/api2',
   SUPPORTED_DEVICE_PREFIXES: ['VP-', 'S101', 'VPR'],
   MIN_BLE_RSSI: -75,

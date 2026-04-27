@@ -29,6 +29,7 @@ App<IAppOption>({
   },
   onShow() {
     // 回到前台先尝试自动重连蓝牙（小程序后台被微信挂起时连接会断）
+    // 不区分 "用户主动断开 vs 系统挂起断开", 只要 bleInfo 还在就重连 ── 没连好就重连.
     const bleInfo: any = wx.getStorageSync('bleInfo');
     if (bleInfo && bleInfo.deviceId) {
       veepooBle.veepooWeiXinSDKBleReconnectDeviceManager(bleInfo, (res: any) => {

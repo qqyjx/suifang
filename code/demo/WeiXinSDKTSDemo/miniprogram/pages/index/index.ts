@@ -457,8 +457,9 @@ Component({
       // 3. 清 deviceId 缓存, 让下次重连用 MAC 重新走 register
       dataStorage.resetDeviceIdCache();
 
-      // 4. 清 bleInfo 防止 onShow 自动重连一个已断的设备 (用户主动断意味着不想自动重连了)
-      wx.setStorageSync('bleInfo', null);
+      // 4. bleInfo 保留. 产品判断: 主动断开后只要 bleInfo 还在, 用户回首页 onShow 仍然
+      //    自动重连 (没连好就重连). 之前清 bleInfo=null 会让其它页面 (otaNavite/dial/...)
+      //    访问 bleInfo.deviceId 时 TypeError 崩, 也不符合用户预期.
 
       // 5. UI 状态同步
       self.setData({
@@ -479,8 +480,8 @@ Component({
           let device: any = self.data.device
           console.log("已连接的蓝牙设备res=>", res)
           res.devices.forEach(item => {
-            let bleInfo = wx.getStorageSync('bleInfo');
-            if (bleInfo.deviceId == item.deviceId) {
+            const bleInfo: any = wx.getStorageSync('bleInfo');
+            if (bleInfo && bleInfo.deviceId == item.deviceId) {
 
               self.setData({
                 info: item,
