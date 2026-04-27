@@ -6,6 +6,7 @@ import { BleDataHandler } from '../../jieli_sdk/lib/ble-data-handler';
 import { veepooJLBle } from "../../jieli_sdk/bleInit"
 import { ENV } from "../../services/env"
 import { dispatchBleData } from "../../services/bleDispatcher"
+import { dataStorage } from "../../services/dataStorage"
 // const vpJLBle = new veepooJLBle();
 //打印设置
 
@@ -438,19 +439,36 @@ Component({
     closeBluetoothAdapterManager() {
       let self = this;
       let device = wx.getStorageSync('bleInfo');
-      // 杰里断开蓝牙连接，清除认证数据等
-      veepooJLDisconnectDevice(device)
 
-      // 杰里断开连接
+      // 1. 真断 BLE 物理通道, 否则手表协议层认为还连着 -> 不再广播 -> 下次扫不到
+      if (device && device.deviceId) {
+        try {
+          wx.closeBLEConnection({
+            deviceId: device.deviceId,
+            success: (r) => console.log('[断开] closeBLEConnection ok', r),
+            fail: (e) => console.warn('[断开] closeBLEConnection fail', e),
+          });
+        } catch (e) { console.warn('[断开] closeBLEConnection 异常', e); }
+      }
 
+      // 2. 杰理 SDK 也清一下连接状态/认证缓存
+      try { veepooJLDisconnectDevice(device) } catch (e) { console.warn('[断开] jieli disconnect 异常', e); }
+
+      // 3. 清 deviceId 缓存, 让下次重连用 MAC 重新走 register
+      dataStorage.resetDeviceIdCache();
+
+      // 4. 清 bleInfo 防止 onShow 自动重连一个已断的设备 (用户主动断意味着不想自动重连了)
+      wx.setStorageSync('bleInfo', null);
+
+      // 5. UI 状态同步
       self.setData({
-        device: {}
-      })
-      self.setData({
+        device: {},
         isConnected: false,
         connected: false,
-        info: {}
+        info: {},
       })
+
+      wx.showToast({ title: '已断开，可重新搜索', icon: 'none', duration: 1500 });
     },
     // 获取已连接的蓝牙设备
     getConnectedBleDevice() {

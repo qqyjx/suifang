@@ -1,5 +1,5 @@
 import { veepooJLBle } from "./jieli_sdk/bleInit"
-import { veepooBle } from "./miniprogram_dist/index"
+import { veepooBle, veepooFeature } from "./miniprogram_dist/index"
 import { dataStorage } from "./services/dataStorage"
 import { bleHub } from "./services/bleHub"
 import { ENV } from "./services/env"
@@ -33,10 +33,15 @@ App<IAppOption>({
     if (bleInfo && bleInfo.deviceId) {
       veepooBle.veepooWeiXinSDKBleReconnectDeviceManager(bleInfo, (res: any) => {
         console.log('[App.onShow] 自动重连=>', res);
-        // 重连成功后立即拉手表本地缓存的 3 天日常数据 (用户在表上自测的指标兜底).
-        // 微信小程序无法后台常驻 BLE, 这是把"小程序关着也能上传"做成"打开瞬间补齐"的关键.
         if (res && (res.connection === true || res.reconnect === true)) {
-          setTimeout(() => bleHub.pullHistoryFromWatch(), 1500);
+          // BLE 物理通道恢复后必须再走一次密钥核准, SDK 才会推送 type=1 (含 VPDeviceMAC/版本) 等回调,
+          // 之后主动请求电量/步数才能拿到数据. bleConnection 首次连接也是同样流程.
+          setTimeout(() => {
+            try { veepooFeature.veepooBlePasswordCheckManager(); }
+            catch (e) { console.warn('[App.onShow] 密钥核准失败', e); }
+          }, 500);
+          // 拉手表本地缓存的 3 天日常数据 (用户在表上自测的指标兜底). 等密钥核准后再拉, 否则 SDK 不响应.
+          setTimeout(() => bleHub.pullHistoryFromWatch(), 2500);
         }
       });
     }
