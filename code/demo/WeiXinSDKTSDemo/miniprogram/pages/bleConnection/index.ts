@@ -194,10 +194,12 @@ Page({
 
           // 订阅 notify (BleHub 已全局订阅, 这里把页面 listener 也加进去)
           self.notifyMonitorValueChange();
-          // S101 / iOS already-connected 场景兜底: SDK 可能短路跳过 notify 订阅,
-          // 这里手动 enable 一次 wx.notifyBLECharacteristicValueChange.
-          // 已订阅会返回 "already subscribed" 但不影响; 未订阅则 type=1/2/9 回包丢失.
-          setTimeout(() => self.forceEnableNotify(item.deviceId), 300);
+          // S101 / iOS already-connected 兜底: 强制 enable 所有 notify 特征值,
+          // 修 SDK 短路跳过订阅导致 type=1/2/9 回包丢失.
+          setTimeout(() => {
+            try { require('../../services/bleHub').bleHub.forceEnableNotify(item.deviceId); }
+            catch (err) { console.warn('[bleConnection] forceEnableNotify 触发失败', err); }
+          }, 300);
           // 密钥核准 (SDK 回 type=1 含 VPDeviceMAC/Version, 由 BleHub.handleAutoSync 抓 mac 入 storage)
           setTimeout(() => veepooFeature.veepooBlePasswordCheckManager(), 800);
           // 拉手表 3 天本地缓存 (走 BleHub.handleAutoSync -> dataStorage.saveData -> 上传六元)
@@ -307,37 +309,6 @@ Page({
     veepooBle.veepooWeiXinSDKBleReconnectDeviceManager(bleInfo, function (result: any) {
       console.log('[AutoReconnect] result=>', result)
     })
-  },
-  // 兜底: 手动遍历服务/特征值, 强制 enable 所有 notify 特征.
-  // 修 iOS already-connected 场景 SDK 跳过 notify 订阅 -> type=1/2/9 回包全部丢失.
-  forceEnableNotify(deviceId: string) {
-    wx.getBLEDeviceServices({
-      deviceId,
-      success: (sRes: any) => {
-        sRes.services.forEach((svc: any) => {
-          const u = (svc.uuid || '').toUpperCase();
-          // veepoo + 杰理常用 service: FEE7 / FFFF / FFF0 / 0001 / 180D
-          if (!(u.endsWith('FEE7') || u.endsWith('FFFF') || u.endsWith('FFF0')
-                || u.endsWith('-0001') || u.endsWith('180D'))) return;
-          wx.getBLEDeviceCharacteristics({
-            deviceId, serviceId: svc.uuid,
-            success: (cRes: any) => {
-              cRes.characteristics
-                .filter((ch: any) => ch.properties && ch.properties.notify)
-                .forEach((ch: any) => {
-                  wx.notifyBLECharacteristicValueChange({
-                    state: true, deviceId, serviceId: svc.uuid, characteristicId: ch.uuid,
-                    success: () => console.log('[forceEnableNotify] ok', svc.uuid.slice(0,8), ch.uuid.slice(0,8)),
-                    fail: (e: any) => console.warn('[forceEnableNotify] fail', svc.uuid.slice(0,8), ch.uuid.slice(0,8), e.errMsg || e),
-                  });
-                });
-            },
-            fail: (e: any) => console.warn('[forceEnableNotify] getCharacteristics fail', svc.uuid.slice(0,8), e.errMsg || e),
-          });
-        });
-      },
-      fail: (e: any) => console.warn('[forceEnableNotify] getServices fail', e.errMsg || e),
-    });
   },
   // 停止蓝牙搜索
   StopSearchBleManager() {

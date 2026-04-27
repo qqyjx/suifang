@@ -258,6 +258,50 @@ class BleHub {
   }
 
   /**
+   * 强制订阅所有 notify 特征值. 修 iOS already-connected 场景:
+   *   SDK connect API 看到 BLE 已连就短路返回 result.connection=true,
+   *   但内部跳过 wx.notifyBLECharacteristicValueChange 步骤
+   *   -> SDK 后续 password check / 电量 / 步数请求 write 出去,
+   *      但 notify 没开 -> type=1/2/9 回包全丢 -> 首页 MAC/版本/电量/步数永空.
+   *
+   * 通过 wx 原生 API 显式遍历服务/特征, 强制 enable 所有 notify.
+   * 已订阅的会返回 errno=10008 但不影响 (已经开着).
+   *
+   * 任何重连路径 (手动 connectBle / app.onShow 自动重连 / 蓝牙重连按钮) 都应调一次,
+   * 才能保证 SDK 协议回包能进 wx.onBLECharacteristicValueChange.
+   */
+  forceEnableNotify(deviceId: string): void {
+    if (!deviceId) return;
+    wx.getBLEDeviceServices({
+      deviceId,
+      success: (sRes: any) => {
+        sRes.services.forEach((svc: any) => {
+          const u = (svc.uuid || '').toUpperCase();
+          // veepoo + 杰理常用 service: FEE7 / FFFF / FFF0 / 0001 / 180D
+          if (!(u.includes('FEE7') || u.includes('FFFF') || u.includes('FFF0')
+                || u.endsWith('-0001') || u.includes('180D'))) return;
+          wx.getBLEDeviceCharacteristics({
+            deviceId, serviceId: svc.uuid,
+            success: (cRes: any) => {
+              cRes.characteristics
+                .filter((ch: any) => ch.properties && ch.properties.notify)
+                .forEach((ch: any) => {
+                  wx.notifyBLECharacteristicValueChange({
+                    state: true, deviceId, serviceId: svc.uuid, characteristicId: ch.uuid,
+                    success: () => console.log('[forceEnableNotify] ok', svc.uuid.slice(0, 8), ch.uuid.slice(0, 8)),
+                    fail: (e: any) => console.warn('[forceEnableNotify] fail', svc.uuid.slice(0, 8), ch.uuid.slice(0, 8), e.errMsg || e),
+                  });
+                });
+            },
+            fail: (e: any) => console.warn('[forceEnableNotify] getCharacteristics fail', svc.uuid.slice(0, 8), e.errMsg || e),
+          });
+        });
+      },
+      fail: (e: any) => console.warn('[forceEnableNotify] getServices fail', e.errMsg || e),
+    });
+  }
+
+  /**
    * 重连成功后调用:
    *   把手表本地缓存的 3 天日常数据 (步数/血压/血氧/血糖/体温...) 全部拉回来,
    *   回调走 handleAutoSync -> dataStorage.saveData -> HTTP 上传到生产 MySQL.
