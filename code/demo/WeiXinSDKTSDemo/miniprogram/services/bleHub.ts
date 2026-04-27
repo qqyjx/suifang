@@ -38,6 +38,14 @@ class BleHub {
     // monitor 通道 (体征/设置类全部)
     veepooBle.veepooWeiXinSDKNotifyMonitorValueChange((e: any) => this.dispatch(this.listeners, e));
     veepooBle.veepooWeiXinSDKNotifyMonitorValueChange = (cb: Listener) => { this.listeners.push(cb); };
+    // 诊断 listener: 把每条 type=N 回包打印出来, 方便排查未识别的数据类型 (尤其手动测量历史回包).
+    this.listeners.push((e: any) => {
+      if (e && typeof e.type !== 'undefined') {
+        const c = e.content || {};
+        const keys = Object.keys(c).slice(0, 6).join(',');
+        console.log(`[BleHub] 收到 type=${e.type} 字段=${keys}`);
+      }
+    });
     this.listeners.push((e: any) => this.handleAutoSync(e));
 
     // ECG 通道 (心率 type=51, ECG 波形 持续 push)
@@ -316,15 +324,46 @@ class BleHub {
     }
     this.lastPullAt = now;
 
+    // 1. 拉日常汇总: 步数/距离/卡路里/睡眠 等聚合数据 (走 type=5/9 回包)
     [0, 1, 2].forEach((day, i) => {
       setTimeout(() => {
         try {
           veepooFeature.veepooSendReadDailyDataManager({ day, package: 1 });
-          console.log(`[BleHub] 触发拉历史 day=${day}`);
+          console.log(`[BleHub] 触发拉日常汇总 day=${day}`);
         } catch (err) {
-          console.warn(`[BleHub] 拉历史 day=${day} 失败:`, err);
+          console.warn(`[BleHub] 拉日常汇总 day=${day} 失败:`, err);
         }
       }, i * 2000);
+    });
+
+    // 2. 拉手动测量数据: 用户在手表上手动按键测量的血压/心率/血氧/体温/血糖/HRV/血液成分.
+    //    走开 -> 任何时刻打开小程序 -> 自动补齐 的核心 (CLAUDE.md 用户感知需求).
+    //    日常汇总不含手动测量的实时值, 必须用 SendManualMeasurementDataRead 单独拉.
+    const dataTypes = [
+      { id: 0, name: '血压' },
+      { id: 1, name: '心率' },
+      { id: 2, name: '血糖' },
+      { id: 4, name: '血氧' },
+      { id: 5, name: '体温' },
+      { id: 7, name: 'HRV' },
+      { id: 8, name: '血液成分' },
+    ];
+    // timestamp = 今天 00:00 (秒级 Unix), SDK 会拉这之后的所有手动测量记录
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const ts = Math.floor(today.getTime() / 1000);
+    dataTypes.forEach((dt, i) => {
+      setTimeout(() => {
+        try {
+          veepooFeature.veepooSendManualMeasurementDataReadManager({
+            timestamp: ts,
+            dataType: dt.id,
+          });
+          console.log(`[BleHub] 触发拉手动测量 ${dt.name} dataType=${dt.id} ts=${ts}`);
+        } catch (err) {
+          console.warn(`[BleHub] 拉手动测量 ${dt.name} 失败:`, err);
+        }
+      }, 6500 + i * 1200);
     });
   }
 }
