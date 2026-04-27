@@ -28,6 +28,8 @@ Page({
   scanTimer: 0 as any,
   scanSeenCount: 0,
   scanMatchedCount: 0,
+  // manualConnecting=true 期间 BLE 状态变化的断开视为我们主动 close, 不要触发 tryAutoReconnect 竞争 cleanConnect.
+  manualConnecting: false,
 
   /**
    * 生命周期函数--监听页面加载
@@ -172,48 +174,55 @@ Page({
     wx.showLoading({
       title: '连接中'
     })
-    
+
     this.StopSearchBleManager()
     deviceList.forEach((item: any) => {
       if (item.deviceId == e.currentTarget.dataset.deviceid) {
         wx.setStorageSync('bleInfo', item)
         // 用户主动选设备 = 重新允许自动重连. 清掉之前 closeBluetoothAdapterManager 设的 flag.
         wx.removeStorageSync('userDisconnected');
-        veepooBle.veepooWeiXinSDKBleConnectionServicesCharacteristicsNotifyManager(item, function (result: any) {
-          console.log("result=>", result)
-          if (result.connection) {
-            // 首次连接成功后, 把手表本地缓存的 3 天数据拉回来一次 (BleHub 自动 saveData 上传).
-            // 之后任意时刻 onShow 重连都会触发同样动作, 用户在表上自测的指标不会丢.
+        // S101 / iOS 场景: 系统层往往残留 "already connected" 状态,
+        // 直接走 SDK connect API 会被短路 -> result.connection=true 但特征值未重新订阅
+        // -> SDK 后续 password check / 电量 / 步数请求发出去都收不到 type=1/2/9 回复
+        // -> 首页 MAC/版本/电量/步数全空.
+        // 解决: 先强制 close BLE 通道, 再走 SDK connect, 保证握手从零开始.
+        self.manualConnecting = true;
+        const cleanConnect = () => {
+          veepooBle.veepooWeiXinSDKBleConnectionServicesCharacteristicsNotifyManager(item, function (result: any) {
+            console.log("result=>", result)
+            if (!result.connection) {
+              self.manualConnecting = false;
+              wx.hideLoading();
+              wx.showToast({ title: '连接失败,请重试', icon: 'none' });
+              return;
+            }
+            self.manualConnecting = false;
+
+            // 订阅 notify (BleHub 已全局订阅过, 这里把页面 listener 也加进去)
+            self.notifyMonitorValueChange();
+            // 密钥核准 (SDK 会回 type=1 含 VPDeviceMAC/Version)
+            setTimeout(() => veepooFeature.veepooBlePasswordCheckManager(), 500);
+            // 拉手表 3 天本地缓存 (走 BleHub.handleAutoSync -> dataStorage.saveData -> 上传六元)
             setTimeout(() => {
               try {
                 const { bleHub } = require('../../services/bleHub');
                 bleHub.pullHistoryFromWatch();
               } catch (err) { console.warn('[bleConnection] pullHistory 触发失败', err); }
             }, 2000);
-
-            // 获取当前服务，订阅监听
-            self.notifyMonitorValueChange();
-            console.log("232323")
-            // 蓝牙密码核准
-            console.log("3q243")
-
-            setTimeout(() => {
-              veepooFeature.veepooBlePasswordCheckManager();
-            }, 500);
-
-            // result.connection=true 已表示 BLE 物理通道+特征值订阅都已就绪,
-            // MTU 协商和密钥核准 setTimeout 已发出, 后续 SDK 回调由 BleHub 全局接收.
-            // 不再轮询 deviceChipStatus: 该 key 仅在中科芯片 (chip==3) 时被 SDK 写入,
-            // 杰理/炬芯/Nordic 设备 (含 S101) 永远拿不到 -> setInterval 永等卡死.
-            // 给密钥核准 + MTU 留 2.5s 缓冲后直接跳首页, 数据通道已由 BleHub 接管.
+            // 不再轮询 deviceChipStatus (该 key 仅在中科芯片写入, 杰理/Nordic 永远空).
+            // 给密钥核准 + MTU 留 2.5s 缓冲后直接跳首页, 数据通道由 BleHub 接管.
             setTimeout(() => {
               wx.hideLoading();
               wx.redirectTo({ url: '/pages/index/index' });
             }, 2500);
-          }
-
-
-        })
+          });
+        };
+        // 强制断开后再 connect (无论之前是否连着, close 失败也继续走 connect).
+        // 解决 iOS "already connected" 残留导致 SDK 跳过特征值订阅 -> type=1/2/9 全部 miss.
+        wx.closeBLEConnection({
+          deviceId: item.deviceId,
+          complete: () => setTimeout(cleanConnect, 300),
+        });
       }
     })
   },
@@ -296,6 +305,8 @@ Page({
       console.log("蓝牙连接状态变化=>", e)
       if (e && e.connected === false) {
         dataStorage.resetDeviceIdCache()
+        // 主动 close 期间的断开是 cleanConnect 流程的一部分, 不要重复触发 reconnect 竞争
+        if (self.manualConnecting) return
         self.tryAutoReconnect()
       }
     })
