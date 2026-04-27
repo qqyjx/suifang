@@ -2,6 +2,7 @@
 import { veepooBle, veepooFeature } from '../../miniprogram_dist/index'
 import { dataStorage } from '../../services/dataStorage'
 import { ENV } from '../../services/env'
+import { dispatchBleData } from '../../services/bleDispatcher'
 
 const SCAN_TIMEOUT_MS = 30000
 
@@ -345,5 +346,7 @@ Page({
   bleDataParses(value: any) {
     let content = value;
     console.log("content=>", content)
+    // 全局兜底：连接成功但跳转 index 之间的极短窗口若有数据推送也能落库 + 上传
+    dispatchBleData(value)
   }
 })
