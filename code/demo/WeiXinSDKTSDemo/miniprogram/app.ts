@@ -39,14 +39,12 @@ App<IAppOption>({
       veepooBle.veepooWeiXinSDKBleReconnectDeviceManager(bleInfo, (res: any) => {
         console.log('[App.onShow] 自动重连=>', res);
         if (res && (res.connection === true || res.reconnect === true)) {
-          // 强制 enable notify (修 iOS already-connected 短路, 否则 type=1/2/9 回包丢失)
-          setTimeout(() => bleHub.forceEnableNotify(bleInfo.deviceId), 300);
           // BLE 物理通道恢复后必须再走一次密钥核准, SDK 才会推送 type=1 (含 VPDeviceMAC/版本) 等回调,
           // 之后主动请求电量/步数才能拿到数据. bleConnection 首次连接也是同样流程.
           setTimeout(() => {
             try { veepooFeature.veepooBlePasswordCheckManager(); }
             catch (e) { console.warn('[App.onShow] 密钥核准失败', e); }
-          }, 800);
+          }, 500);
           // 拉手表本地缓存的 3 天日常数据 (用户在表上自测的指标兜底). 等密钥核准后再拉, 否则 SDK 不响应.
           setTimeout(() => bleHub.pullHistoryFromWatch(), 2500);
         }

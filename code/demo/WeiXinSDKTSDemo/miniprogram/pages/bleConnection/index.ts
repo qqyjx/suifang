@@ -172,58 +172,53 @@ Page({
     wx.showLoading({
       title: '连接中'
     })
-
+    
     this.StopSearchBleManager()
     deviceList.forEach((item: any) => {
       if (item.deviceId == e.currentTarget.dataset.deviceid) {
         wx.setStorageSync('bleInfo', item)
         // 用户主动选设备 = 重新允许自动重连. 清掉之前 closeBluetoothAdapterManager 设的 flag.
         wx.removeStorageSync('userDisconnected');
-        // S101 / iOS 场景: 系统层往往残留 "already connected" 状态,
-        // 直接走 SDK connect API 会被短路 -> result.connection=true 但特征值未重新订阅
-        // -> SDK 后续 password check / 电量 / 步数请求发出去都收不到 type=1/2/9 回复
-        // -> 首页 MAC/版本/电量/步数全空.
-        // 解决: 先强制 close BLE 通道, 再走 SDK connect, 保证握手从零开始.
-        // SDK 回调可能多次触发: 连接过程中先 connection=false (建连中),
-        // 然后 connection=true (建连成功). 不能见到 false 就 toast 失败.
-        // 用 settled flag 保证只处理第一次成功; 12s 都没成功才弹失败 toast.
-        let settled = false;
-        const failTimer = setTimeout(() => {
-          if (settled) return;
-          settled = true;
-          wx.hideLoading();
-          wx.showToast({ title: '连接超时,请重试', icon: 'none' });
-        }, 12000);
-
         veepooBle.veepooWeiXinSDKBleConnectionServicesCharacteristicsNotifyManager(item, function (result: any) {
-          console.log("result=>", result);
-          if (settled) return;
-          if (!result.connection) return; // 等下一次回调
-          settled = true;
-          clearTimeout(failTimer);
+          console.log("result=>", result)
+          if (result.connection) {
+            // 首次连接成功后, 把手表本地缓存的 3 天数据拉回来一次 (BleHub 自动 saveData 上传).
+            // 之后任意时刻 onShow 重连都会触发同样动作, 用户在表上自测的指标不会丢.
+            setTimeout(() => {
+              try {
+                const { bleHub } = require('../../services/bleHub');
+                bleHub.pullHistoryFromWatch();
+              } catch (err) { console.warn('[bleConnection] pullHistory 触发失败', err); }
+            }, 2000);
 
-          // 订阅 notify (BleHub 已全局订阅, 这里把页面 listener 也加进去)
-          self.notifyMonitorValueChange();
-          // 强制 enable 所有 notify 特征值, 修 SDK 短路跳过订阅导致 type=1/2/9 回包丢失.
-          setTimeout(() => {
-            try { require('../../services/bleHub').bleHub.forceEnableNotify(item.deviceId); }
-            catch (err) { console.warn('[bleConnection] forceEnableNotify 触发失败', err); }
-          }, 300);
-          // 密钥核准 (SDK 回 type=1 含 VPDeviceMAC/Version, 由 BleHub.handleAutoSync 抓 mac 入 storage)
-          setTimeout(() => veepooFeature.veepooBlePasswordCheckManager(), 1000);
-          // 拉手表 3 天本地缓存 (走 BleHub.handleAutoSync -> dataStorage.saveData -> 上传六元)
-          setTimeout(() => {
-            try {
-              const { bleHub } = require('../../services/bleHub');
-              bleHub.pullHistoryFromWatch();
-            } catch (err) { console.warn('[bleConnection] pullHistory 触发失败', err); }
-          }, 2200);
-          // 2.8s 缓冲后跳首页, 数据通道由 BleHub 接管, 首页 onShow 也会再 forceEnableNotify 兜一次.
-          setTimeout(() => {
-            wx.hideLoading();
-            wx.redirectTo({ url: '/pages/index/index' });
-          }, 2800);
-        });
+            // 获取当前服务，订阅监听
+            self.notifyMonitorValueChange();
+            console.log("232323")
+            // 蓝牙密码核准
+            console.log("3q243")
+
+            setTimeout(() => {
+              veepooFeature.veepooBlePasswordCheckManager();
+            }, 500);
+
+            // 轮询等 SDK 密钥核准把 deviceChipStatus 写好后跳首页.
+            // BLE 物理通道在 result.connection=true 时已通, MTU 协商也已完成,
+            // 但 SDK 私有协议层完成密钥核准的时间不固定 (实测有时 > 10s).
+            // 不再加 10s 超时模态打断用户, 让密钥核准走完即跳首页;
+            // 用户嫌慢可自己按系统返回键退出.
+            let times = setInterval(() => {
+              const deviceChipStatus = wx.getStorageSync('deviceChipStatus');
+              console.log("deviceChipStatus===>", deviceChipStatus);
+              if (deviceChipStatus) {
+                wx.hideLoading();
+                clearInterval(times);
+                wx.redirectTo({ url: '/pages/index/index' });
+              }
+            }, 1000);
+          }
+
+
+        })
       }
     })
   },

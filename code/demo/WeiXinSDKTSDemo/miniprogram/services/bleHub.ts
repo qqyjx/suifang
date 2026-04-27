@@ -38,14 +38,6 @@ class BleHub {
     // monitor 通道 (体征/设置类全部)
     veepooBle.veepooWeiXinSDKNotifyMonitorValueChange((e: any) => this.dispatch(this.listeners, e));
     veepooBle.veepooWeiXinSDKNotifyMonitorValueChange = (cb: Listener) => { this.listeners.push(cb); };
-    // 诊断 listener: 把每条 type=N 回包打印出来, 方便排查未识别的数据类型 (尤其手动测量历史回包).
-    this.listeners.push((e: any) => {
-      if (e && typeof e.type !== 'undefined') {
-        const c = e.content || {};
-        const keys = Object.keys(c).slice(0, 6).join(',');
-        console.log(`[BleHub] 收到 type=${e.type} 字段=${keys}`);
-      }
-    });
     this.listeners.push((e: any) => this.handleAutoSync(e));
 
     // ECG 通道 (心率 type=51, ECG 波形 持续 push)
@@ -61,23 +53,6 @@ class BleHub {
   private dispatch(list: Listener[], e: any): void {
     for (const fn of list) {
       try { fn(e); } catch (err) { console.warn('[BleHub] listener 异常', err); }
-    }
-  }
-
-  // 把 type=1/2/9 抓到的设备状态合并写入 VPDevice storage,
-  // 首页 BlePasswordCheckManager 检测到 VPDevice 就自动填 UI, 不依赖 listener 注册时机.
-  private updateDeviceSnapshot(updates: Record<string, any>): void {
-    const snap: any = wx.getStorageSync('VPDevice') || {};
-    const bleInfo: any = wx.getStorageSync('bleInfo') || {};
-    if (bleInfo.name && !snap.name) snap.name = bleInfo.name;
-    let changed = false;
-    for (const k of Object.keys(updates)) {
-      if (typeof updates[k] === 'undefined') continue;
-      if (snap[k] !== updates[k]) { snap[k] = updates[k]; changed = true; }
-    }
-    if (changed) {
-      wx.setStorageSync('VPDevice', snap);
-      console.log('[BleHub] VPDevice 快照更新:', updates);
     }
   }
 
@@ -116,19 +91,7 @@ class BleHub {
           console.log(`[BleHub] 捕获手表 MAC=${mac}, 已写入 bleInfo.mac`);
         }
       }
-      // 同步把 type=1 全字段写入 VPDevice storage, 让首页 onShow 直接读取兜底
-      // (避免首页 listener 注册晚于 type=1 回包导致 MAC/版本永空).
-      this.updateDeviceSnapshot({
-        VPDeviceMAC: c.VPDeviceMAC,
-        VPDeviceVersion: c.VPDeviceVersion,
-      });
       return;
-    }
-    if (e.type === 2 && typeof c.VPDeviceElectricPercent !== 'undefined') {
-      this.updateDeviceSnapshot({ VPDeviceElectricPercent: c.VPDeviceElectricPercent });
-    }
-    if (e.type === 9 && typeof c.step !== 'undefined') {
-      this.updateDeviceSnapshot({ step: c.step, calorie: c.calorie, distance: c.distance });
     }
 
     let dataType: HealthDataType | null = null;
@@ -266,50 +229,6 @@ class BleHub {
   }
 
   /**
-   * 强制订阅所有 notify 特征值. 修 iOS already-connected 场景:
-   *   SDK connect API 看到 BLE 已连就短路返回 result.connection=true,
-   *   但内部跳过 wx.notifyBLECharacteristicValueChange 步骤
-   *   -> SDK 后续 password check / 电量 / 步数请求 write 出去,
-   *      但 notify 没开 -> type=1/2/9 回包全丢 -> 首页 MAC/版本/电量/步数永空.
-   *
-   * 通过 wx 原生 API 显式遍历服务/特征, 强制 enable 所有 notify.
-   * 已订阅的会返回 errno=10008 但不影响 (已经开着).
-   *
-   * 任何重连路径 (手动 connectBle / app.onShow 自动重连 / 蓝牙重连按钮) 都应调一次,
-   * 才能保证 SDK 协议回包能进 wx.onBLECharacteristicValueChange.
-   */
-  forceEnableNotify(deviceId: string): void {
-    if (!deviceId) return;
-    wx.getBLEDeviceServices({
-      deviceId,
-      success: (sRes: any) => {
-        console.log('[forceEnableNotify] services count:', sRes.services.length);
-        // 不再按 UUID 过滤 — 所有 service 上所有带 notify 属性的特征都 enable.
-        // S101 杰理芯片同时跑杰理 OTA 协议 + veepoo 私有协议在不同 service 上,
-        // 之前只 enable FEE7 漏掉 veepoo 的 service 导致 type=1/2/9 仍丢失.
-        sRes.services.forEach((svc: any) => {
-          wx.getBLEDeviceCharacteristics({
-            deviceId, serviceId: svc.uuid,
-            success: (cRes: any) => {
-              cRes.characteristics
-                .filter((ch: any) => ch.properties && ch.properties.notify)
-                .forEach((ch: any) => {
-                  wx.notifyBLECharacteristicValueChange({
-                    state: true, deviceId, serviceId: svc.uuid, characteristicId: ch.uuid,
-                    success: () => console.log('[forceEnableNotify] ok', svc.uuid.slice(0, 8), ch.uuid.slice(0, 8)),
-                    fail: (e: any) => console.warn('[forceEnableNotify] fail', svc.uuid.slice(0, 8), ch.uuid.slice(0, 8), e.errMsg || e),
-                  });
-                });
-            },
-            fail: (e: any) => console.warn('[forceEnableNotify] getCharacteristics fail', svc.uuid.slice(0, 8), e.errMsg || e),
-          });
-        });
-      },
-      fail: (e: any) => console.warn('[forceEnableNotify] getServices fail', e.errMsg || e),
-    });
-  }
-
-  /**
    * 重连成功后调用:
    *   把手表本地缓存的 3 天日常数据 (步数/血压/血氧/血糖/体温...) 全部拉回来,
    *   回调走 handleAutoSync -> dataStorage.saveData -> HTTP 上传到生产 MySQL.
@@ -324,7 +243,7 @@ class BleHub {
     }
     this.lastPullAt = now;
 
-    // 1. 拉日常汇总: 步数/距离/卡路里/睡眠 等聚合数据 (走 type=5/9 回包)
+    // 1) 日常汇总 (步数/睡眠/卡路里 等聚合, 走 type=5/9 回包)
     [0, 1, 2].forEach((day, i) => {
       setTimeout(() => {
         try {
@@ -336,9 +255,9 @@ class BleHub {
       }, i * 2000);
     });
 
-    // 2. 拉手动测量数据: 用户在手表上手动按键测量的血压/心率/血氧/体温/血糖/HRV/血液成分.
-    //    走开 -> 任何时刻打开小程序 -> 自动补齐 的核心 (CLAUDE.md 用户感知需求).
-    //    日常汇总不含手动测量的实时值, 必须用 SendManualMeasurementDataRead 单独拉.
+    // 2) 手动测量 (用户在手表上手动按键测的血压/心率/血氧/体温/血糖/HRV/血液成分).
+    //    日常汇总不含手动测量的瞬时记录, 必须用 SendManualMeasurementDataRead 单独拉.
+    //    "走开 → 任何时刻打开小程序 → 自动补齐到生产 MySQL" 的核心环节.
     const dataTypes = [
       { id: 0, name: '血压' },
       { id: 1, name: '心率' },
@@ -348,7 +267,6 @@ class BleHub {
       { id: 7, name: 'HRV' },
       { id: 8, name: '血液成分' },
     ];
-    // timestamp = 今天 00:00 (秒级 Unix), SDK 会拉这之后的所有手动测量记录
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const ts = Math.floor(today.getTime() / 1000);
@@ -359,7 +277,7 @@ class BleHub {
             timestamp: ts,
             dataType: dt.id,
           });
-          console.log(`[BleHub] 触发拉手动测量 ${dt.name} dataType=${dt.id} ts=${ts}`);
+          console.log(`[BleHub] 触发拉手动测量 ${dt.name} dataType=${dt.id}`);
         } catch (err) {
           console.warn(`[BleHub] 拉手动测量 ${dt.name} 失败:`, err);
         }

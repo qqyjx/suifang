@@ -478,30 +478,29 @@ Component({
     // 获取已连接的蓝牙设备
     getConnectedBleDevice() {
       let self = this;
-      // 进入首页时优先从 storage 兜底拿 VPDevice 快照 (BleHub 写入), 让 UI 立刻有数据.
-      const snap: any = wx.getStorageSync('VPDevice');
-      if (snap) {
-        self.setData({ device: snap, connected: true });
-      }
       wx.getConnectedBluetoothDevices({
         services: ['FFFF', 'FEE7', '0001', '180D'],
         success(res) {
-          let device: any = self.data.device || {}
+          let device: any = self.data.device
           console.log("已连接的蓝牙设备res=>", res)
           res.devices.forEach(item => {
             const bleInfo: any = wx.getStorageSync('bleInfo');
             if (bleInfo && bleInfo.deviceId == item.deviceId) {
-              self.setData({ info: item, connected: true })
+
+              self.setData({
+                info: item,
+                connected: true
+              })
               device.name = item.name;
-              self.setData({ device })
+              self.setData({
+                device
+              })
               self.notifyMonitorValueChange();
-              // 强制 enable notify 兜底, 修 SDK 短路场景 (无论从 bleConnection 进还是 app.onShow 进都走这一遭).
-              try { require('../../services/bleHub').bleHub.forceEnableNotify(item.deviceId); }
-              catch (err) { console.warn('[index] forceEnableNotify 触发失败', err); }
+              // vpJLBle.init();
               // 连接上后读取秘钥，电量等
               setTimeout(() => {
                 self.BlePasswordCheckManager();
-              }, 800);
+              }, 500);
             }
           })
         }
@@ -583,20 +582,26 @@ Component({
       this.ElectricQuantityManager();
       console.log("读取步数")
       this.StepCalorieDistanceManager();
-      // bleDate 是历史拼写错误, 实际写入 storage 的 key 是 bleInfo
-      const bleInfo: any = wx.getStorageSync('bleInfo')
-      if (!bleInfo || !bleInfo.deviceId) return
+      // this.getBackgroundInfo()
+      let bleDate = wx.getStorageSync('bleDate')
+      console.log("bleDate==>", bleDate)
       wx.setBLEMTU({
-        deviceId: bleInfo.deviceId,
+        deviceId: bleDate.deviceId,
         mtu: 247,
-        success: res => console.log("setBLEMTU=>", res),
-        fail: () => {
+        success: res => {
+          console.log("第一个res=>", res)
+        }, //
+        fail: (res) => {
           wx.getBLEMTU({
-            deviceId: bleInfo.deviceId,
-            success: res => console.log("getBLEMTU=>", res),
+            deviceId: bleDate.deviceId, success: res => {
+              console.log("第二个res=>", res)
+
+              // 切换杰里服务等
+            }
           })
         }
       })
+
     },
     // 电量读取
     ElectricQuantityManager() {
