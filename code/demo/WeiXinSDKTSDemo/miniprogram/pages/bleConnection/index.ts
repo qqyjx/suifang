@@ -19,26 +19,26 @@ Page({
    */
   data: {
     bleList: [],
-    isIOS: false
+    isIOS: false,
+    statusText: '扫描中…',
+    isTestBuild: ENV.IS_TEST_BUILD
   },
 
   scanTimer: 0 as any,
+  scanSeenCount: 0,
+  scanMatchedCount: 0,
 
   /**
    * 生命周期函数--监听页面加载
    */
   onLoad() {
     let self = this;
-    wx.getSystemInfo({
-      success: function (res) {
-        if (res.platform == "ios") {
-          self.setData({
-            isIOS: true
-          })
-
-        }
-      }
-    });
+    try {
+      const info = wx.getDeviceInfo ? wx.getDeviceInfo() : wx.getSystemInfoSync()
+      if ((info as any).platform === 'ios') self.setData({ isIOS: true })
+    } catch (e) {
+      console.warn('[bleConnection] getDeviceInfo failed, fallback skipped:', e)
+    }
     this.veepooSDKGetSetting()
     // 挂载断线监听（连接成功后，掉线时自动重连 + 清 deviceId 缓存）
     this.BLEConnectionStateChange()
@@ -69,28 +69,64 @@ Page({
   veepooSDKGetSetting() {
     let self = this;
     let arr: any = []
+    self.scanSeenCount = 0
+    self.scanMatchedCount = 0
+    self.setData({ statusText: '扫描中…', bleList: [] })
     // 获取手机设置状态
     veepooBle.veepooWeiXinSDKStartScanDeviceAndReceiveScanningDevice(function (res: any) {
       const device = res && res[0]
       if (!device || !device.name) return
+      self.scanSeenCount++
+      // 体验版打印每个扫描到的设备，便于排查白名单/RSSI 误杀
+      if (ENV.IS_TEST_BUILD) {
+        console.log('[BLE scan]', device.name, 'RSSI=', device.RSSI, 'id=', device.deviceId)
+      }
       // 过滤 1：弱信号（医院 100 表场景，避免列出隔壁房间的）
-      if (typeof device.RSSI === 'number' && device.RSSI < ENV.MIN_BLE_RSSI) return
+      if (typeof device.RSSI === 'number' && device.RSSI < ENV.MIN_BLE_RSSI) {
+        self.refreshStatus(arr.length); return
+      }
       // 过滤 2：设备名前缀白名单（VP-W680 / S101 / VPR04 等兼容机型）
-      const matched = ENV.SUPPORTED_DEVICE_PREFIXES.some(p => device.name.startsWith(p))
-      if (!matched) return
+      // 体验版下绕过白名单，列出所有非空名设备，便于现场确认真实广播名
+      const matched = ENV.IS_TEST_BUILD
+        ? true
+        : ENV.SUPPORTED_DEVICE_PREFIXES.some(p => device.name.startsWith(p))
+      if (!matched) {
+        self.refreshStatus(arr.length); return
+      }
+      self.scanMatchedCount++
       // 同 deviceId 去重（SDK 可能重复回调）
-      if (arr.find((d: any) => d.deviceId === device.deviceId)) return
+      if (arr.find((d: any) => d.deviceId === device.deviceId)) {
+        self.refreshStatus(arr.length); return
+      }
       arr.push(device)
       self.setData({
         bleList: arr.sort((a: any, b: any) => b.RSSI - a.RSSI)
       })
+      self.refreshStatus(arr.length)
     })
     // 扫描超时自动停止（防患者放下手机后扫描跑一夜耗电）
     if (this.scanTimer) clearTimeout(this.scanTimer)
     this.scanTimer = setTimeout(() => {
       self.StopSearchBleManager()
-      wx.showToast({ title: '扫描结束，未找到请重试', icon: 'none' })
+      const tip = self.scanSeenCount === 0
+        ? '未发现任何蓝牙广播，请确认手表已开机且蓝牙已开启'
+        : `已发现 ${self.scanSeenCount} 个设备，但无匹配机型`
+      self.setData({ statusText: tip })
+      wx.showToast({ title: tip, icon: 'none' })
     }, SCAN_TIMEOUT_MS)
+  },
+
+  // 状态行：体验版多打"已发现/匹配"细节，正式版只显示简短状态
+  refreshStatus(listLen: number) {
+    if (ENV.IS_TEST_BUILD) {
+      this.setData({
+        statusText: `扫描中… 已发现 ${this.scanSeenCount} 个，匹配 ${this.scanMatchedCount} 个，列表 ${listLen} 项`
+      })
+    } else if (listLen === 0) {
+      this.setData({ statusText: '扫描中…' })
+    } else {
+      this.setData({ statusText: '' })
+    }
   },
 
   connectionDevice(e: any) {
