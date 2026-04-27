@@ -201,28 +201,18 @@ Page({
               veepooFeature.veepooBlePasswordCheckManager();
             }, 500);
 
-            // 等密钥核准回调写入 deviceChipStatus 才跳到首页. 如果手表 BLE 状态卡死,
-            // 这个轮询会永远等下去 -> 用户看到"连接中"无限转. 加 10 秒超时让用户能逃出.
-            let elapsed = 0;
+            // 轮询等 SDK 密钥核准把 deviceChipStatus 写好后跳首页.
+            // BLE 物理通道在 result.connection=true 时已通, MTU 协商也已完成,
+            // 但 SDK 私有协议层完成密钥核准的时间不固定 (实测有时 > 10s).
+            // 不再加 10s 超时模态打断用户, 让密钥核准走完即跳首页;
+            // 用户嫌慢可自己按系统返回键退出.
             let times = setInterval(() => {
-              elapsed += 1000;
               const deviceChipStatus = wx.getStorageSync('deviceChipStatus');
               console.log("deviceChipStatus===>", deviceChipStatus);
               if (deviceChipStatus) {
                 wx.hideLoading();
                 clearInterval(times);
                 wx.redirectTo({ url: '/pages/index/index' });
-                return;
-              }
-              if (elapsed >= 10000) {
-                clearInterval(times);
-                wx.hideLoading();
-                wx.showModal({
-                  title: '连接超时',
-                  content: '密钥核准未完成。请尝试：\n1) iOS 设置→蓝牙→忽略此设备\n2) 手表关机重开\n3) 关闭其他正在连手表的 App',
-                  showCancel: false,
-                  confirmText: '我知道了',
-                });
               }
             }, 1000);
           }
