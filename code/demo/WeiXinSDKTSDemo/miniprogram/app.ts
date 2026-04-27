@@ -29,9 +29,13 @@ App<IAppOption>({
   },
   onShow() {
     // 回到前台先尝试自动重连蓝牙（小程序后台被微信挂起时连接会断）
-    // 不区分 "用户主动断开 vs 系统挂起断开", 只要 bleInfo 还在就重连 ── 没连好就重连.
+    // 区分 "用户主动按断开 vs 系统挂起断开":
+    //   - 主动断开 (closeBluetoothAdapterManager 设 userDisconnected=true): 不重连,
+    //     用户已表达 "现在不想用这块表" 的意图.
+    //   - 挂起断开 (没 flag): 自动重连, 没连好就重连.
     const bleInfo: any = wx.getStorageSync('bleInfo');
-    if (bleInfo && bleInfo.deviceId) {
+    const userDisconnected = wx.getStorageSync('userDisconnected');
+    if (bleInfo && bleInfo.deviceId && !userDisconnected) {
       veepooBle.veepooWeiXinSDKBleReconnectDeviceManager(bleInfo, (res: any) => {
         console.log('[App.onShow] 自动重连=>', res);
         if (res && (res.connection === true || res.reconnect === true)) {

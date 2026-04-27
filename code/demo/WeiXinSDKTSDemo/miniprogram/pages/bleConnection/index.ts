@@ -177,6 +177,8 @@ Page({
     deviceList.forEach((item: any) => {
       if (item.deviceId == e.currentTarget.dataset.deviceid) {
         wx.setStorageSync('bleInfo', item)
+        // 用户主动选设备 = 重新允许自动重连. 清掉之前 closeBluetoothAdapterManager 设的 flag.
+        wx.removeStorageSync('userDisconnected');
         veepooBle.veepooWeiXinSDKBleConnectionServicesCharacteristicsNotifyManager(item, function (result: any) {
           console.log("result=>", result)
           if (result.connection) {

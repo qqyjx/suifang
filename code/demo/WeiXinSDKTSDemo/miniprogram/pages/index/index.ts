@@ -457,9 +457,13 @@ Component({
       // 3. 清 deviceId 缓存, 让下次重连用 MAC 重新走 register
       dataStorage.resetDeviceIdCache();
 
-      // 4. bleInfo 保留. 产品判断: 主动断开后只要 bleInfo 还在, 用户回首页 onShow 仍然
-      //    自动重连 (没连好就重连). 之前清 bleInfo=null 会让其它页面 (otaNavite/dial/...)
-      //    访问 bleInfo.deviceId 时 TypeError 崩, 也不符合用户预期.
+      // 4. 区分 "用户主动按断开" vs "系统挂起断开":
+      //    - 主动断开: 设 userDisconnected flag, app.ts onShow 跳过自动重连,
+      //      避免 "我都按断开了它还自动连回来" 的反直觉.
+      //    - 挂起断开: bleInfo 在, 没 flag, onShow 自动重连 (没连好就重连).
+      //    bleInfo 不清 null 避免 7 处 bleInfo.deviceId 引发 TypeError 链 (v3 教训).
+      //    flag 在 bleConnection 连接成功时清 (用户重新选设备 = 重新允许自动重连).
+      wx.setStorageSync('userDisconnected', true);
 
       // 5. UI 状态同步
       self.setData({
