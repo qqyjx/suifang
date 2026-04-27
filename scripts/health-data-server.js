@@ -478,6 +478,27 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    // DELETE /api/device/:id — 删 wearable_device 一行 + 联动删 wearable_device_data
+    // 用于清理废弃设备 (例如 iOS UUID 注册的脏行) 及其历史数据.
+    if (req.method === 'DELETE' && /^\/api\/device\/\d+$/.test(pathname)) {
+      const idStr = pathname.split('/').pop();
+      const id = parseInt(idStr, 10);
+      if (!Number.isFinite(id) || id <= 0) { res.writeHead(400); res.end(JSON.stringify({ error: 'invalid id' })); return; }
+      if (!remoteEnabled || !remotePool) { res.writeHead(503); res.end(JSON.stringify({ error: '六元MySQL 未连接' })); return; }
+      const dataTable = remoteConfig.dataTable;
+      try {
+        const [delData] = await remotePool.execute(`DELETE FROM \`${dataTable}\` WHERE deviceId = ?`, [id]);
+        const [delDev] = await remotePool.execute('DELETE FROM wearable_device WHERE id = ?', [id]);
+        console.log(`[设备删除] id=${id} | wearable_device 删 ${delDev.affectedRows} 行 | ${dataTable} 删 ${delData.affectedRows} 行`);
+        res.writeHead(200);
+        res.end(JSON.stringify({ success: true, deviceId: id, deletedDevice: delDev.affectedRows, deletedData: delData.affectedRows }));
+      } catch (err) {
+        console.error(`[设备删除] id=${id} 失败:`, err.message);
+        res.writeHead(500); res.end(JSON.stringify({ error: err.message }));
+      }
+      return;
+    }
+
     // GET /api/device/by-sign?sign=... — 只查不创建（运维核对用）
     if (req.method === 'GET' && pathname === '/api/device/by-sign') {
       const sign = url.searchParams.get('sign');
@@ -618,6 +639,7 @@ const server = http.createServer(async (req, res) => {
           'POST /api/health-data': '保存健康数据（小程序调用）',
           'GET /api/health-data': '获取文件数据',
           'POST /api/device/register': '按 device_sign UPSERT 到 wearable_device 并返回 deviceId',
+          'DELETE /api/device/:id': '删 wearable_device 一行 + 联动删该 deviceId 的所有数据',
           'GET /api/device/by-sign': '按 sign 查 wearable_device（?sign=）',
           'GET /api/vitals/heart-rate': '心率 (?patient_id=&start=&end=&limit=)',
           'GET /api/vitals/blood-oxygen': '血氧',

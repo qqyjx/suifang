@@ -20,6 +20,7 @@ API 端点：
 部署：scp 本文件到 192.168.4.104:/opt/suifang/health_server.py，systemd 启动
 """
 import json
+import re
 import datetime
 import traceback
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -245,6 +246,27 @@ def device_by_sign(sign):
     finally:
         conn.close()
 
+def device_delete(device_id):
+    """
+    删 wearable_device 一行 + 联动删 wearable_device_data 中所有 deviceId 行.
+    用于清理废弃设备 (例如 iOS UUID 飘逸生成的脏行).
+    """
+    if not isinstance(device_id, int) or device_id <= 0:
+        return None, 'invalid id'
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute('DELETE FROM wearable_device_data WHERE deviceId = %s', (device_id,))
+        deleted_data = cur.rowcount
+        cur.execute('DELETE FROM wearable_device WHERE id = %s', (device_id,))
+        deleted_device = cur.rowcount
+        cur.close()
+        print('[设备删除] id={} | wearable_device 删 {} 行 | wearable_device_data 删 {} 行'.format(
+            device_id, deleted_device, deleted_data))
+        return {'deviceId': device_id, 'deletedDevice': deleted_device, 'deletedData': deleted_data}, None
+    finally:
+        conn.close()
+
 # ============ HTTP Handler ============
 class HealthDataHandler(BaseHTTPRequestHandler):
 
@@ -253,7 +275,7 @@ class HealthDataHandler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header('Content-Type', 'application/json; charset=utf-8')
         self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS')
         self.send_header('Access-Control-Allow-Headers', 'Content-Type')
         self.send_header('Content-Length', len(body))
         self.end_headers()
@@ -324,6 +346,7 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                     'POST /api/health-data': 'UPSERT 体征数据',
                     'POST /api/device/register': '按 device_sign UPSERT 到 wearable_device 并返回 deviceId',
                     'GET  /api/device/by-sign?sign=...': '按 sign 查 wearable_device（不创建）',
+                    'DELETE /api/device/:id': '删 wearable_device 一行 + 联动删该 deviceId 的所有数据',
                 },
             })
 
@@ -376,6 +399,25 @@ class HealthDataHandler(BaseHTTPRequestHandler):
             else:
                 self._send_json(404, {'error': 'Not found. Available: POST /api/health-data, POST /api/device/register'})
 
+        except Exception as e:
+            traceback.print_exc()
+            self._send_json(500, {'error': str(e)})
+
+    def do_DELETE(self):
+        parsed = urlparse(self.path)
+        pathname = parsed.path
+        # /api/device/:id
+        m = re.match(r'^/api/device/(\d+)$', pathname)
+        if not m:
+            self._send_json(404, {'error': 'Not found. Available: DELETE /api/device/:id'})
+            return
+        try:
+            device_id = int(m.group(1))
+            result, err = device_delete(device_id)
+            if err:
+                self._send_json(400, {'error': err})
+            else:
+                self._send_json(200, {'success': True, **result})
         except Exception as e:
             traceback.print_exc()
             self._send_json(500, {'error': str(e)})
