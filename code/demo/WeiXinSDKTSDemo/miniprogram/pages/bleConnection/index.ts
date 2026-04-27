@@ -199,32 +199,30 @@ Page({
               veepooFeature.veepooBlePasswordCheckManager();
             }, 500);
 
+            // 等密钥核准回调写入 deviceChipStatus 才跳到首页. 如果手表 BLE 状态卡死,
+            // 这个轮询会永远等下去 -> 用户看到"连接中"无限转. 加 10 秒超时让用户能逃出.
+            let elapsed = 0;
             let times = setInterval(() => {
-              // 设备芯片
-              // 当前设备芯片获取状态  （通过调用蓝牙密码核准设置， 获取）
-              let deviceChipStatus = wx.getStorageSync('deviceChipStatus')
-
-              console.log("deviceChipStatus===>", deviceChipStatus)
+              elapsed += 1000;
+              const deviceChipStatus = wx.getStorageSync('deviceChipStatus');
+              console.log("deviceChipStatus===>", deviceChipStatus);
               if (deviceChipStatus) {
-                wx.hideLoading()
-                wx.redirectTo({
-                  url: '/pages/index/index'
-                })
-
-                // 实际业务流程根据获取到的芯片类型添加相关js逻辑
-                // if (deviceChip == 1) {
-                //   console.log("杰里");
-                // } else if (deviceChip == 2) {
-                //   console.log("炬芯")
-                // } else if (deviceChip == 3) {
-                //   console.log("中科")
-                // } else {
-                //   console.log("Nordic/汇顶系列")
-                // }
-
-                clearInterval(times)
+                wx.hideLoading();
+                clearInterval(times);
+                wx.redirectTo({ url: '/pages/index/index' });
+                return;
               }
-            }, 1000)
+              if (elapsed >= 10000) {
+                clearInterval(times);
+                wx.hideLoading();
+                wx.showModal({
+                  title: '连接超时',
+                  content: '密钥核准未完成。请尝试：\n1) iOS 设置→蓝牙→忽略此设备\n2) 手表关机重开\n3) 关闭其他正在连手表的 App',
+                  showCancel: false,
+                  confirmText: '我知道了',
+                });
+              }
+            }, 1000);
           }
 
 
