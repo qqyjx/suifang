@@ -246,14 +246,24 @@ class DataStorageService {
   }
 
   /**
-   * 根据已连接 BLE 设备的 name + deviceId(MAC/UUID) 调用服务端 register，
-   * 取回真正的 deviceId 并缓存。BLE 未连或 register 失败时回退 4。
+   * 根据已连接 BLE 设备生成稳定 device_sign, 调用服务端 register, 取回真正的 deviceId 并缓存.
+   *
+   * sign 优先级 (越靠前越稳定, 跨平台/跨重装一致):
+   *   1. bleInfo.mac    — Veepoo SDK 蓝牙密码核准回调 (type=1) 里的 VPDeviceMAC, 由 BleHub 写入
+   *   2. bleInfo.deviceId — wx.getBluetoothDevices() 给的 id (Android=MAC, iOS=系统代理 UUID)
+   *
+   * 不能只用 deviceId 当 sign: iOS 的代理 UUID 每次重装小程序甚至每次重连都可能变,
+   * 会让 wearable_device 表行数膨胀, 同一手表在表里有多行.
+   *
+   * BLE 未连或 register 失败时回退 4 (已知保留位).
    */
   private async resolveDeviceId(): Promise<number> {
     if (this.deviceIdCache !== null) return this.deviceIdCache;
     const bleInfo: any = wx.getStorageSync('bleInfo');
-    if (!bleInfo || !bleInfo.deviceId) return 4;
-    const sign = `${bleInfo.name || 'unknown'}_${bleInfo.deviceId}`;
+    if (!bleInfo) return 4;
+    const stableId = bleInfo.mac || bleInfo.deviceId;
+    if (!stableId) return 4;
+    const sign = `${bleInfo.name || 'unknown'}_${stableId}`;
     return new Promise((resolve) => {
       wx.request({
         url: `${WSL_SERVER_URL}/api/device/register`,

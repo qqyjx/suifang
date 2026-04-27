@@ -61,14 +61,7 @@ Page({
         self.setData({
           device: e.content
         })
-
-        // 保存步数数据
-        const stepData = {
-          step: e.content.step || 0,
-          calorie: e.content.calorie || 0,
-          distance: e.content.distance || 0
-        }
-        dataStorage.saveData('step', stepData)
+        // saveData 已由 services/bleHub.ts 全局自动处理, 这里不再重复.
       }
     })
   },

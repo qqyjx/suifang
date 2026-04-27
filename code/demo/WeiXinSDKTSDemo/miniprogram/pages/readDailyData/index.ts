@@ -96,15 +96,9 @@ Page({
           let similarity = veepooFeature.VeepooGetLorentzScatterPlotSimilarity(rr50Array);
           console.log("洛伦兹相似度similarity=>", similarity)
 
-          // 保存日常综合数据
-          const dailyData = {
-            dailyRecords: content,
-            rr50Array: rr50Array,
-            lorentzData: drawArr,
-            starIndex: starIndexs,
-            similarity: similarity
-          }
-          dataStorage.saveData('daily', dailyData)
+          // saveData 已由 services/bleHub.ts 全局自动处理 (type=5 Progress=100), 这里不再重复.
+          // 页面里 rr50Array/lorentz/starIndex 仅用于本地可视化, 不入库.
+          void rr50Array; void drawArr; void starIndexs; void similarity;
         }
       }
     })

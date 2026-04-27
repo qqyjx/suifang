@@ -111,15 +111,7 @@ Page({
         self.setData({
           univerData: e
         })
-
-        // 保存血压数据
-        const bloodPressureData = {
-          systolic: e.content?.bloodPressureHigh || e.content?.systolic || 0,
-          diastolic: e.content?.bloodPressureLow || e.content?.diastolic || 0,
-          heartRate: e.content?.heartRate || 0,
-          measureStatus: e.content?.measureStatus || 0
-        }
-        dataStorage.saveData('bloodPressure', bloodPressureData)
+        // saveData 已由 services/bleHub.ts 全局自动处理, 这里不再重复.
       }
       if (e.type == 28) {
         self.setData({

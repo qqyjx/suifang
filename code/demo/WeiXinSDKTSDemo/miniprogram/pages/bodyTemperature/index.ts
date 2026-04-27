@@ -56,14 +56,7 @@ Page({
         self.setData({
           deviceInfo: e
         })
-
-        // 保存体温数据
-        const temperatureData = {
-          bodyTemperature: e.content?.bodyTemperature || 0,
-          skinTemperature: e.content?.skinTemperature || 0,
-          temperatureUnit: e.content?.temperatureUnit || 'celsius'
-        }
-        dataStorage.saveData('temperature', temperatureData)
+        // saveData 已由 services/bleHub.ts 全局自动处理, 这里不再重复.
       }
 
 

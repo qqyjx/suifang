@@ -127,14 +127,7 @@ Page({
         self.setData({
           device: e
         })
-
-        // 保存血氧数据
-        const bloodOxygenData = {
-          bloodOxygen: e.content?.bloodOxygen || 0,
-          heartRate: e.content?.heartRate || 0,
-          allDayData: e.content?.allDayData || []
-        }
-        dataStorage.saveData('bloodOxygen', bloodOxygenData)
+        // saveData 已由 services/bleHub.ts 全局自动处理, 这里不再重复.
       }
 
 

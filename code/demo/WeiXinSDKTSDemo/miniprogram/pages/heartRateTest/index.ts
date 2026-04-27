@@ -37,17 +37,10 @@ Page({
     veepooBle.veepooWeiXinSDKNotifyECGValueChange(function (e: any) {
       console.log(" ECG 监听蓝牙回调=>", e);
       if(e.type == 51){
-
         self.setData({
           heartRate:e.content.heartRate
         })
-
-        // 保存心率数据
-        const heartRateData = {
-          heartRate: e.content.heartRate || 0,
-          heartState: e.content.heartState || 0
-        }
-        dataStorage.saveData('heartRate', heartRateData)
+        // saveData 已由 services/bleHub.ts 全局自动处理 (ECG 通道), 这里不再重复.
       }
     })
   },

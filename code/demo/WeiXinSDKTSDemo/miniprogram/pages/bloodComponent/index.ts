@@ -132,17 +132,7 @@ Page({
         Blood: e
       })
 
-      // 保存血液成分数据
-      if (e.type == 39 || e.type == 40) {
-        const bloodLiquidData = {
-          uricAcid: e.content?.uricAcid || 0,
-          cholesterol: e.content?.cholesterol || 0,
-          triacylglycerol: e.content?.triacylglycerol || 0,
-          highDensity: e.content?.highDensity || 0,
-          lowDensity: e.content?.lowDensity || 0
-        }
-        dataStorage.saveData('bloodLiquid', bloodLiquidData)
-      }
+      // saveData 已由 services/bleHub.ts 全局自动处理 (type 39/40), 这里不再重复.
     })
   },
 

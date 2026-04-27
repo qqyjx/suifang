@@ -50,17 +50,7 @@ Page({
           self.setData({
             device: e
           })
-
-          // 保存睡眠数据
-          const sleepData = {
-            fallAsleepTime: e.content?.fallAsleepTime || '',
-            wakeUpTime: e.content?.wakeUpTime || '',
-            deepSleepTime: e.content?.deepSleepTime || 0,
-            lightSleepTime: e.content?.lightSleepTime || 0,
-            sleepQuality: e.content?.sleepQuality || 0,
-            sleepCurve: e.content?.sleepCurve || []
-          }
-          dataStorage.saveData('sleep', sleepData)
+          // saveData 已由 services/bleHub.ts 全局自动处理, 这里不再重复.
         }
       }
 

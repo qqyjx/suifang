@@ -180,6 +180,15 @@ Page({
         veepooBle.veepooWeiXinSDKBleConnectionServicesCharacteristicsNotifyManager(item, function (result: any) {
           console.log("result=>", result)
           if (result.connection) {
+            // 首次连接成功后, 把手表本地缓存的 3 天数据拉回来一次 (BleHub 自动 saveData 上传).
+            // 之后任意时刻 onShow 重连都会触发同样动作, 用户在表上自测的指标不会丢.
+            setTimeout(() => {
+              try {
+                const { bleHub } = require('../../services/bleHub');
+                bleHub.pullHistoryFromWatch();
+              } catch (err) { console.warn('[bleConnection] pullHistory 触发失败', err); }
+            }, 2000);
+
             // 获取当前服务，订阅监听
             self.notifyMonitorValueChange();
             console.log("232323")

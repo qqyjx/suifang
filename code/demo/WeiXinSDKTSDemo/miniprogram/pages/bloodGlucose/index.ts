@@ -188,16 +188,7 @@ Page({
         self.setData({
           bloodGlucoseData: e
         })
-
-        // 保存血糖数据
-        if (e.type == 37 || e.type == 38) {
-          const bloodGlucoseData = {
-            bloodGlucose: e.content?.bloodGlucose || 0,
-            measureTime: e.content?.measureTime || '',
-            unit: 'mmol/L'
-          }
-          dataStorage.saveData('bloodGlucose', bloodGlucoseData)
-        }
+        // saveData 已由 services/bleHub.ts 全局自动处理 (type 37/38), 这里不再重复.
       }
     })
   },
