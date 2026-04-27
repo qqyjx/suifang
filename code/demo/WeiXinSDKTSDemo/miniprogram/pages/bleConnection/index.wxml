@@ -1,16 +1,13 @@
 <view>
-  <!-- <button catch:tap="connectBle2">重新连接</button> -->
+  <view wx:if="{{statusText}}" class="scan-status">{{statusText}}</view>
+  <view wx:if="{{isTestBuild && bleList.length === 0}}" class="scan-hint">
+    体验版：已绕过设备名白名单，若仍空白说明 SDK 未回调或附近无 BLE 广播；请检查 vConsole 中 [BLE scan] 日志。
+  </view>
   <view wx:for="{{bleList}}" wx:key="index" class="device-ios" catch:tap="connectBle" data-name="{{item.name}}" data-deviceid="{{item.deviceId}}">
     <view class="device-ios-item">
       <view class="deviceNane">名称：{{item.name}}</view>
       <view class="deviceRssi">RSSI：{{item.RSSI}}</view>
     </view>
-
     <view class="deviceMac" style="font-size: 12px;">MAC：{{item.mac}}</view>
   </view>
-  <!-- <view wx:if="{{!isIOS}}" wx:for="{{bleList}}" wx:key="index" class="device" catch:tap="connectBle" data-name="{{item.name}}" data-deviceid="{{item.deviceId}}">
-    <view class="deviceNane" style="font-size: 16px;">名称：{{item.name}}</view>
-    <view class="deviceMac" style="font-size:12px">MAC：{{item.deviceId}}</view>
-    <view class="deviceMac" style="font-size:12px">RSSI：{{item.RSSI}}</view>
-  </view> -->
 </view>
