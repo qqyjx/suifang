@@ -582,26 +582,20 @@ Component({
       this.ElectricQuantityManager();
       console.log("读取步数")
       this.StepCalorieDistanceManager();
-      // this.getBackgroundInfo()
-      let bleDate = wx.getStorageSync('bleDate')
-      console.log("bleDate==>", bleDate)
+      // bleDate 是历史拼写错误, 实际写入 storage 的 key 是 bleInfo
+      const bleInfo: any = wx.getStorageSync('bleInfo')
+      if (!bleInfo || !bleInfo.deviceId) return
       wx.setBLEMTU({
-        deviceId: bleDate.deviceId,
+        deviceId: bleInfo.deviceId,
         mtu: 247,
-        success: res => {
-          console.log("第一个res=>", res)
-        }, //
-        fail: (res) => {
+        success: res => console.log("setBLEMTU=>", res),
+        fail: () => {
           wx.getBLEMTU({
-            deviceId: bleDate.deviceId, success: res => {
-              console.log("第二个res=>", res)
-
-              // 切换杰里服务等
-            }
+            deviceId: bleInfo.deviceId,
+            success: res => console.log("getBLEMTU=>", res),
           })
         }
       })
-
     },
     // 电量读取
     ElectricQuantityManager() {

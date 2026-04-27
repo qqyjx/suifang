@@ -56,6 +56,23 @@ class BleHub {
     }
   }
 
+  // 把 type=1/2/9 抓到的设备状态合并写入 VPDevice storage,
+  // 首页 BlePasswordCheckManager 检测到 VPDevice 就自动填 UI, 不依赖 listener 注册时机.
+  private updateDeviceSnapshot(updates: Record<string, any>): void {
+    const snap: any = wx.getStorageSync('VPDevice') || {};
+    const bleInfo: any = wx.getStorageSync('bleInfo') || {};
+    if (bleInfo.name && !snap.name) snap.name = bleInfo.name;
+    let changed = false;
+    for (const k of Object.keys(updates)) {
+      if (typeof updates[k] === 'undefined') continue;
+      if (snap[k] !== updates[k]) { snap[k] = updates[k]; changed = true; }
+    }
+    if (changed) {
+      wx.setStorageSync('VPDevice', snap);
+      console.log('[BleHub] VPDevice 快照更新:', updates);
+    }
+  }
+
   /**
    * ECG 通道自动同步:
    *   - type=51 心率值 -> heartRate 表
@@ -91,7 +108,19 @@ class BleHub {
           console.log(`[BleHub] 捕获手表 MAC=${mac}, 已写入 bleInfo.mac`);
         }
       }
+      // 同步把 type=1 全字段写入 VPDevice storage, 让首页 onShow 直接读取兜底
+      // (避免首页 listener 注册晚于 type=1 回包导致 MAC/版本永空).
+      this.updateDeviceSnapshot({
+        VPDeviceMAC: c.VPDeviceMAC,
+        VPDeviceVersion: c.VPDeviceVersion,
+      });
       return;
+    }
+    if (e.type === 2 && typeof c.VPDeviceElectricPercent !== 'undefined') {
+      this.updateDeviceSnapshot({ VPDeviceElectricPercent: c.VPDeviceElectricPercent });
+    }
+    if (e.type === 9 && typeof c.step !== 'undefined') {
+      this.updateDeviceSnapshot({ step: c.step, calorie: c.calorie, distance: c.distance });
     }
 
     let dataType: HealthDataType | null = null;

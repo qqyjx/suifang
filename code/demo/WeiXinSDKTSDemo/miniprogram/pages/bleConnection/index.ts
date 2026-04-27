@@ -28,8 +28,6 @@ Page({
   scanTimer: 0 as any,
   scanSeenCount: 0,
   scanMatchedCount: 0,
-  // manualConnecting=true 期间 BLE 状态变化的断开视为我们主动 close, 不要触发 tryAutoReconnect 竞争 cleanConnect.
-  manualConnecting: false,
 
   /**
    * 生命周期函数--监听页面加载
@@ -186,42 +184,35 @@ Page({
         // -> SDK 后续 password check / 电量 / 步数请求发出去都收不到 type=1/2/9 回复
         // -> 首页 MAC/版本/电量/步数全空.
         // 解决: 先强制 close BLE 通道, 再走 SDK connect, 保证握手从零开始.
-        self.manualConnecting = true;
-        const cleanConnect = () => {
-          veepooBle.veepooWeiXinSDKBleConnectionServicesCharacteristicsNotifyManager(item, function (result: any) {
-            console.log("result=>", result)
-            if (!result.connection) {
-              self.manualConnecting = false;
-              wx.hideLoading();
-              wx.showToast({ title: '连接失败,请重试', icon: 'none' });
-              return;
-            }
-            self.manualConnecting = false;
+        veepooBle.veepooWeiXinSDKBleConnectionServicesCharacteristicsNotifyManager(item, function (result: any) {
+          console.log("result=>", result);
+          if (!result.connection) {
+            wx.hideLoading();
+            wx.showToast({ title: '连接失败,请重试', icon: 'none' });
+            return;
+          }
 
-            // 订阅 notify (BleHub 已全局订阅过, 这里把页面 listener 也加进去)
-            self.notifyMonitorValueChange();
-            // 密钥核准 (SDK 会回 type=1 含 VPDeviceMAC/Version)
-            setTimeout(() => veepooFeature.veepooBlePasswordCheckManager(), 500);
-            // 拉手表 3 天本地缓存 (走 BleHub.handleAutoSync -> dataStorage.saveData -> 上传六元)
-            setTimeout(() => {
-              try {
-                const { bleHub } = require('../../services/bleHub');
-                bleHub.pullHistoryFromWatch();
-              } catch (err) { console.warn('[bleConnection] pullHistory 触发失败', err); }
-            }, 2000);
-            // 不再轮询 deviceChipStatus (该 key 仅在中科芯片写入, 杰理/Nordic 永远空).
-            // 给密钥核准 + MTU 留 2.5s 缓冲后直接跳首页, 数据通道由 BleHub 接管.
-            setTimeout(() => {
-              wx.hideLoading();
-              wx.redirectTo({ url: '/pages/index/index' });
-            }, 2500);
-          });
-        };
-        // 强制断开后再 connect (无论之前是否连着, close 失败也继续走 connect).
-        // 解决 iOS "already connected" 残留导致 SDK 跳过特征值订阅 -> type=1/2/9 全部 miss.
-        wx.closeBLEConnection({
-          deviceId: item.deviceId,
-          complete: () => setTimeout(cleanConnect, 300),
+          // 订阅 notify (BleHub 已全局订阅, 这里把页面 listener 也加进去)
+          self.notifyMonitorValueChange();
+          // S101 / iOS already-connected 场景兜底: SDK 可能短路跳过 notify 订阅,
+          // 这里手动 enable 一次 wx.notifyBLECharacteristicValueChange.
+          // 已订阅会返回 "already subscribed" 但不影响; 未订阅则 type=1/2/9 回包丢失.
+          setTimeout(() => self.forceEnableNotify(item.deviceId), 300);
+          // 密钥核准 (SDK 回 type=1 含 VPDeviceMAC/Version, 由 BleHub.handleAutoSync 抓 mac 入 storage)
+          setTimeout(() => veepooFeature.veepooBlePasswordCheckManager(), 800);
+          // 拉手表 3 天本地缓存 (走 BleHub.handleAutoSync -> dataStorage.saveData -> 上传六元)
+          setTimeout(() => {
+            try {
+              const { bleHub } = require('../../services/bleHub');
+              bleHub.pullHistoryFromWatch();
+            } catch (err) { console.warn('[bleConnection] pullHistory 触发失败', err); }
+          }, 2000);
+          // 不再轮询 deviceChipStatus (该 key 仅在中科芯片写入, 杰理/Nordic 永远空).
+          // 2.5s 缓冲后跳首页, 数据通道由 BleHub 接管, 首页内有密钥核准重试 fallback 兜底空字段.
+          setTimeout(() => {
+            wx.hideLoading();
+            wx.redirectTo({ url: '/pages/index/index' });
+          }, 2500);
         });
       }
     })
@@ -305,8 +296,6 @@ Page({
       console.log("蓝牙连接状态变化=>", e)
       if (e && e.connected === false) {
         dataStorage.resetDeviceIdCache()
-        // 主动 close 期间的断开是 cleanConnect 流程的一部分, 不要重复触发 reconnect 竞争
-        if (self.manualConnecting) return
         self.tryAutoReconnect()
       }
     })
@@ -318,6 +307,37 @@ Page({
     veepooBle.veepooWeiXinSDKBleReconnectDeviceManager(bleInfo, function (result: any) {
       console.log('[AutoReconnect] result=>', result)
     })
+  },
+  // 兜底: 手动遍历服务/特征值, 强制 enable 所有 notify 特征.
+  // 修 iOS already-connected 场景 SDK 跳过 notify 订阅 -> type=1/2/9 回包全部丢失.
+  forceEnableNotify(deviceId: string) {
+    wx.getBLEDeviceServices({
+      deviceId,
+      success: (sRes: any) => {
+        sRes.services.forEach((svc: any) => {
+          const u = (svc.uuid || '').toUpperCase();
+          // veepoo + 杰理常用 service: FEE7 / FFFF / FFF0 / 0001 / 180D
+          if (!(u.endsWith('FEE7') || u.endsWith('FFFF') || u.endsWith('FFF0')
+                || u.endsWith('-0001') || u.endsWith('180D'))) return;
+          wx.getBLEDeviceCharacteristics({
+            deviceId, serviceId: svc.uuid,
+            success: (cRes: any) => {
+              cRes.characteristics
+                .filter((ch: any) => ch.properties && ch.properties.notify)
+                .forEach((ch: any) => {
+                  wx.notifyBLECharacteristicValueChange({
+                    state: true, deviceId, serviceId: svc.uuid, characteristicId: ch.uuid,
+                    success: () => console.log('[forceEnableNotify] ok', svc.uuid.slice(0,8), ch.uuid.slice(0,8)),
+                    fail: (e: any) => console.warn('[forceEnableNotify] fail', svc.uuid.slice(0,8), ch.uuid.slice(0,8), e.errMsg || e),
+                  });
+                });
+            },
+            fail: (e: any) => console.warn('[forceEnableNotify] getCharacteristics fail', svc.uuid.slice(0,8), e.errMsg || e),
+          });
+        });
+      },
+      fail: (e: any) => console.warn('[forceEnableNotify] getServices fail', e.errMsg || e),
+    });
   },
   // 停止蓝牙搜索
   StopSearchBleManager() {
