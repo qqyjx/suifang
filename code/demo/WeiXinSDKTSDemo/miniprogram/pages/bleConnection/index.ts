@@ -184,37 +184,45 @@ Page({
         // -> SDK 后续 password check / 电量 / 步数请求发出去都收不到 type=1/2/9 回复
         // -> 首页 MAC/版本/电量/步数全空.
         // 解决: 先强制 close BLE 通道, 再走 SDK connect, 保证握手从零开始.
+        // SDK 回调可能多次触发: 连接过程中先 connection=false (建连中),
+        // 然后 connection=true (建连成功). 不能见到 false 就 toast 失败.
+        // 用 settled flag 保证只处理第一次成功; 12s 都没成功才弹失败 toast.
+        let settled = false;
+        const failTimer = setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          wx.hideLoading();
+          wx.showToast({ title: '连接超时,请重试', icon: 'none' });
+        }, 12000);
+
         veepooBle.veepooWeiXinSDKBleConnectionServicesCharacteristicsNotifyManager(item, function (result: any) {
           console.log("result=>", result);
-          if (!result.connection) {
-            wx.hideLoading();
-            wx.showToast({ title: '连接失败,请重试', icon: 'none' });
-            return;
-          }
+          if (settled) return;
+          if (!result.connection) return; // 等下一次回调
+          settled = true;
+          clearTimeout(failTimer);
 
           // 订阅 notify (BleHub 已全局订阅, 这里把页面 listener 也加进去)
           self.notifyMonitorValueChange();
-          // S101 / iOS already-connected 兜底: 强制 enable 所有 notify 特征值,
-          // 修 SDK 短路跳过订阅导致 type=1/2/9 回包丢失.
+          // 强制 enable 所有 notify 特征值, 修 SDK 短路跳过订阅导致 type=1/2/9 回包丢失.
           setTimeout(() => {
             try { require('../../services/bleHub').bleHub.forceEnableNotify(item.deviceId); }
             catch (err) { console.warn('[bleConnection] forceEnableNotify 触发失败', err); }
           }, 300);
           // 密钥核准 (SDK 回 type=1 含 VPDeviceMAC/Version, 由 BleHub.handleAutoSync 抓 mac 入 storage)
-          setTimeout(() => veepooFeature.veepooBlePasswordCheckManager(), 800);
+          setTimeout(() => veepooFeature.veepooBlePasswordCheckManager(), 1000);
           // 拉手表 3 天本地缓存 (走 BleHub.handleAutoSync -> dataStorage.saveData -> 上传六元)
           setTimeout(() => {
             try {
               const { bleHub } = require('../../services/bleHub');
               bleHub.pullHistoryFromWatch();
             } catch (err) { console.warn('[bleConnection] pullHistory 触发失败', err); }
-          }, 2000);
-          // 不再轮询 deviceChipStatus (该 key 仅在中科芯片写入, 杰理/Nordic 永远空).
-          // 2.5s 缓冲后跳首页, 数据通道由 BleHub 接管, 首页内有密钥核准重试 fallback 兜底空字段.
+          }, 2200);
+          // 2.8s 缓冲后跳首页, 数据通道由 BleHub 接管, 首页 onShow 也会再 forceEnableNotify 兜一次.
           setTimeout(() => {
             wx.hideLoading();
             wx.redirectTo({ url: '/pages/index/index' });
-          }, 2500);
+          }, 2800);
         });
       }
     })

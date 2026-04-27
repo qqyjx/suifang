@@ -275,11 +275,11 @@ class BleHub {
     wx.getBLEDeviceServices({
       deviceId,
       success: (sRes: any) => {
+        console.log('[forceEnableNotify] services count:', sRes.services.length);
+        // 不再按 UUID 过滤 — 所有 service 上所有带 notify 属性的特征都 enable.
+        // S101 杰理芯片同时跑杰理 OTA 协议 + veepoo 私有协议在不同 service 上,
+        // 之前只 enable FEE7 漏掉 veepoo 的 service 导致 type=1/2/9 仍丢失.
         sRes.services.forEach((svc: any) => {
-          const u = (svc.uuid || '').toUpperCase();
-          // veepoo + 杰理常用 service: FEE7 / FFFF / FFF0 / 0001 / 180D
-          if (!(u.includes('FEE7') || u.includes('FFFF') || u.includes('FFF0')
-                || u.endsWith('-0001') || u.includes('180D'))) return;
           wx.getBLEDeviceCharacteristics({
             deviceId, serviceId: svc.uuid,
             success: (cRes: any) => {
