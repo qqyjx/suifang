@@ -177,8 +177,6 @@ Page({
     deviceList.forEach((item: any) => {
       if (item.deviceId == e.currentTarget.dataset.deviceid) {
         wx.setStorageSync('bleInfo', item)
-        // 用户主动选设备 = 重新允许自动重连. 清掉之前 closeBluetoothAdapterManager 设的 flag.
-        wx.removeStorageSync('userDisconnected');
         veepooBle.veepooWeiXinSDKBleConnectionServicesCharacteristicsNotifyManager(item, function (result: any) {
           console.log("result=>", result)
           if (result.connection) {
@@ -201,20 +199,32 @@ Page({
               veepooFeature.veepooBlePasswordCheckManager();
             }, 500);
 
-            // 轮询等 SDK 密钥核准把 deviceChipStatus 写好后跳首页.
-            // BLE 物理通道在 result.connection=true 时已通, MTU 协商也已完成,
-            // 但 SDK 私有协议层完成密钥核准的时间不固定 (实测有时 > 10s).
-            // 不再加 10s 超时模态打断用户, 让密钥核准走完即跳首页;
-            // 用户嫌慢可自己按系统返回键退出.
             let times = setInterval(() => {
-              const deviceChipStatus = wx.getStorageSync('deviceChipStatus');
-              console.log("deviceChipStatus===>", deviceChipStatus);
+              // 设备芯片
+              // 当前设备芯片获取状态  （通过调用蓝牙密码核准设置， 获取）
+              let deviceChipStatus = wx.getStorageSync('deviceChipStatus')
+
+              console.log("deviceChipStatus===>", deviceChipStatus)
               if (deviceChipStatus) {
-                wx.hideLoading();
-                clearInterval(times);
-                wx.redirectTo({ url: '/pages/index/index' });
+                wx.hideLoading()
+                wx.redirectTo({
+                  url: '/pages/index/index'
+                })
+
+                // 实际业务流程根据获取到的芯片类型添加相关js逻辑
+                // if (deviceChip == 1) {
+                //   console.log("杰里");
+                // } else if (deviceChip == 2) {
+                //   console.log("炬芯")
+                // } else if (deviceChip == 3) {
+                //   console.log("中科")
+                // } else {
+                //   console.log("Nordic/汇顶系列")
+                // }
+
+                clearInterval(times)
               }
-            }, 1000);
+            }, 1000)
           }
 
 

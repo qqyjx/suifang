@@ -457,13 +457,8 @@ Component({
       // 3. 清 deviceId 缓存, 让下次重连用 MAC 重新走 register
       dataStorage.resetDeviceIdCache();
 
-      // 4. 区分 "用户主动按断开" vs "系统挂起断开":
-      //    - 主动断开: 设 userDisconnected flag, app.ts onShow 跳过自动重连,
-      //      避免 "我都按断开了它还自动连回来" 的反直觉.
-      //    - 挂起断开: bleInfo 在, 没 flag, onShow 自动重连 (没连好就重连).
-      //    bleInfo 不清 null 避免 7 处 bleInfo.deviceId 引发 TypeError 链 (v3 教训).
-      //    flag 在 bleConnection 连接成功时清 (用户重新选设备 = 重新允许自动重连).
-      wx.setStorageSync('userDisconnected', true);
+      // 4. 清 bleInfo 防止 onShow 自动重连一个已断的设备 (用户主动断意味着不想自动重连了)
+      wx.setStorageSync('bleInfo', null);
 
       // 5. UI 状态同步
       self.setData({
@@ -484,8 +479,8 @@ Component({
           let device: any = self.data.device
           console.log("已连接的蓝牙设备res=>", res)
           res.devices.forEach(item => {
-            const bleInfo: any = wx.getStorageSync('bleInfo');
-            if (bleInfo && bleInfo.deviceId == item.deviceId) {
+            let bleInfo = wx.getStorageSync('bleInfo');
+            if (bleInfo.deviceId == item.deviceId) {
 
               self.setData({
                 info: item,
