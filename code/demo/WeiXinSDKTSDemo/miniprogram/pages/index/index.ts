@@ -457,8 +457,13 @@ Component({
       // 3. 清 deviceId 缓存, 让下次重连用 MAC 重新走 register
       dataStorage.resetDeviceIdCache();
 
-      // 4. 清 bleInfo 防止 onShow 自动重连一个已断的设备 (用户主动断意味着不想自动重连了)
-      wx.setStorageSync('bleInfo', null);
+      // 4. 区分 "用户主动按断开" vs "系统挂起断开":
+      //    - 主动断开: 设 userDisconnected flag, app.ts onShow 跳过自动重连,
+      //      避免 "我都按断开了它还自动连回来" 的反直觉.
+      //    - 挂起断开: bleInfo 在, 没 flag, onShow 自动重连 (没连好就重连).
+      //    bleInfo 不清 null 避免 7 处 bleInfo.deviceId 引发 TypeError 链 (v3 教训).
+      //    flag 在 bleConnection 连接成功时清 (用户重新选设备 = 重新允许自动重连).
+      wx.setStorageSync('userDisconnected', true);
 
       // 5. UI 状态同步
       self.setData({
@@ -473,29 +478,30 @@ Component({
     // 获取已连接的蓝牙设备
     getConnectedBleDevice() {
       let self = this;
+      // 进入首页时优先从 storage 兜底拿 VPDevice 快照 (BleHub 写入), 让 UI 立刻有数据.
+      const snap: any = wx.getStorageSync('VPDevice');
+      if (snap) {
+        self.setData({ device: snap, connected: true });
+      }
       wx.getConnectedBluetoothDevices({
         services: ['FFFF', 'FEE7', '0001', '180D'],
         success(res) {
-          let device: any = self.data.device
+          let device: any = self.data.device || {}
           console.log("已连接的蓝牙设备res=>", res)
           res.devices.forEach(item => {
-            let bleInfo = wx.getStorageSync('bleInfo');
-            if (bleInfo.deviceId == item.deviceId) {
-
-              self.setData({
-                info: item,
-                connected: true
-              })
+            const bleInfo: any = wx.getStorageSync('bleInfo');
+            if (bleInfo && bleInfo.deviceId == item.deviceId) {
+              self.setData({ info: item, connected: true })
               device.name = item.name;
-              self.setData({
-                device
-              })
+              self.setData({ device })
               self.notifyMonitorValueChange();
-              // vpJLBle.init();
+              // 强制 enable notify 兜底, 修 SDK 短路场景 (无论从 bleConnection 进还是 app.onShow 进都走这一遭).
+              try { require('../../services/bleHub').bleHub.forceEnableNotify(item.deviceId); }
+              catch (err) { console.warn('[index] forceEnableNotify 触发失败', err); }
               // 连接上后读取秘钥，电量等
               setTimeout(() => {
                 self.BlePasswordCheckManager();
-              }, 500);
+              }, 800);
             }
           })
         }
@@ -577,26 +583,20 @@ Component({
       this.ElectricQuantityManager();
       console.log("读取步数")
       this.StepCalorieDistanceManager();
-      // this.getBackgroundInfo()
-      let bleDate = wx.getStorageSync('bleDate')
-      console.log("bleDate==>", bleDate)
+      // bleDate 是历史拼写错误, 实际写入 storage 的 key 是 bleInfo
+      const bleInfo: any = wx.getStorageSync('bleInfo')
+      if (!bleInfo || !bleInfo.deviceId) return
       wx.setBLEMTU({
-        deviceId: bleDate.deviceId,
+        deviceId: bleInfo.deviceId,
         mtu: 247,
-        success: res => {
-          console.log("第一个res=>", res)
-        }, //
-        fail: (res) => {
+        success: res => console.log("setBLEMTU=>", res),
+        fail: () => {
           wx.getBLEMTU({
-            deviceId: bleDate.deviceId, success: res => {
-              console.log("第二个res=>", res)
-
-              // 切换杰里服务等
-            }
+            deviceId: bleInfo.deviceId,
+            success: res => console.log("getBLEMTU=>", res),
           })
         }
       })
-
     },
     // 电量读取
     ElectricQuantityManager() {
