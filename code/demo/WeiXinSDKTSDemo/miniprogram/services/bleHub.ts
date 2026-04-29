@@ -35,9 +35,25 @@ class BleHub {
     if (this.initialized) return;
     this.initialized = true;
 
-    // monitor 通道 (体征/设置类全部)
-    veepooBle.veepooWeiXinSDKNotifyMonitorValueChange((e: any) => this.dispatch(this.listeners, e));
+    // 用 BLECharacteristicValueChangeManager 而非 NotifyMonitorValueChange 注册 SDK 解析器:
+    //   后者会先 wx.notifyBLECharacteristicValueChange 启用 SDK 特定 service/char 的 notify,
+    //   而 app.onLaunch 时 bleInfo.deviceId 为空 -> 必失败 -> success cb 内的
+    //   wx.onBLECharacteristicValueChange 永不注册 -> Veepoo 协议响应全丢.
+    // BLECharacteristicValueChangeManager 仅注册 wx 全局监听 + 走解析器, 不依赖连接状态.
+    // BLE notify 由 forceEnableNotify 在连接成功后兜底启用, 解耦.
+    veepooBle.veepooWeiXinSDKBLECharacteristicValueChangeManager((e: any) => {
+      // 同一份 SDK 解析事件:
+      //   - 普通体征/设置类 -> monitor listeners
+      //   - type=51 心率 ECG 通道也要 (handleEcgChannel 兜底入库)
+      this.dispatch(this.listeners, e);
+      if (e && e.type === 51) this.dispatch(this.ecgListeners, e);
+    });
+
+    // monkey-patch 让旧的页面调用都进 hub listener 队列 (避免页面再调 SDK 原生
+    // 又触发一次 wx.onBLECharacteristicValueChange 注册, 与 fan-out 之外的覆盖).
     veepooBle.veepooWeiXinSDKNotifyMonitorValueChange = (cb: Listener) => { this.listeners.push(cb); };
+    veepooBle.veepooWeiXinSDKNotifyECGValueChange = (cb: Listener) => { this.ecgListeners.push(cb); };
+
     // 诊断 listener: 把每条 type=N 回包打印出来, 方便排查未识别的数据类型 (尤其手动测量历史回包).
     this.listeners.push((e: any) => {
       if (e && typeof e.type !== 'undefined') {
@@ -47,15 +63,9 @@ class BleHub {
       }
     });
     this.listeners.push((e: any) => this.handleAutoSync(e));
-
-    // ECG 通道 (心率 type=51, ECG 波形 持续 push)
-    // 波形数据量大且需要 totalArray 累积, 留给 ecgTest 页面处理 (页面 push 自己的 totalArray);
-    // 心率 type=51 在 hub 自动 saveData, 不依赖用户进 heartRateTest 页面.
-    veepooBle.veepooWeiXinSDKNotifyECGValueChange((e: any) => this.dispatch(this.ecgListeners, e));
-    veepooBle.veepooWeiXinSDKNotifyECGValueChange = (cb: Listener) => { this.ecgListeners.push(cb); };
     this.ecgListeners.push((e: any) => this.handleEcgChannel(e));
 
-    console.log('[BleHub] 全局事件中心已初始化 (monitor+ecg 两通道)');
+    console.log('[BleHub] 全局事件中心已初始化 (monitor+ecg 两通道, 单 wx listener via 全局 fan-out)');
   }
 
   private dispatch(list: Listener[], e: any): void {

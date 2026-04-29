@@ -5,6 +5,80 @@ import { bleHub } from "./services/bleHub"
 import { ENV } from "./services/env"
 const vpJLBle = new veepooJLBle();
 
+// wx.onBLECharacteristicValueChange 是全局单 listener — 重复注册会覆盖.
+// Jieli BleDataHandler.init 与 Veepoo SDK 都会注册, 谁后注册谁赢, 另一方静默失效
+// → S101 (杰理芯片 + Veepoo 私有协议双栈) 上 Veepoo type=1 (含 MAC/版本) 永远收不到
+//   → 首页 4 字段永空.
+// 解法: monkey-patch 成多 listener 累加 + 一个真实 wx 监听 fan-out 给所有 cb.
+// 必须在 bleHub.init() 与 vpJLBle.init() 之前执行, 才能拦截两者的注册调用.
+//
+// 注意: 微信小程序的 wx 对象方法可能 non-writable, 直接赋值会被静默忽略.
+// 所以三步走: 1) 直接赋值, 2) 失败回退 defineProperty 强制定义, 3) 仍失败则在
+// 原 wx fn 上注册唯一 master listener, 由 master 模拟 fan-out (虽然其他模块
+// 仍会调原 wx 覆盖, 但 master 注册顺序最早, 给后续修复留个开关).
+(function installBleNotifyFanout() {
+  const W: any = wx;
+  console.log('[BleFanout] IIFE 启动, 准备 patch wx.onBLECharacteristicValueChange');
+  if (W.__bleFanoutInstalled) { console.log('[BleFanout] 已安装, 跳过'); return; }
+
+  const orig: any = W.onBLECharacteristicValueChange;
+  if (typeof orig !== 'function') {
+    console.error('[BleFanout] wx.onBLECharacteristicValueChange 不是函数:', typeof orig);
+    return;
+  }
+  const origBound = orig.bind(W);
+
+  const subscribers: Array<(res: any) => void> = [];
+  const newFn = (cb: (res: any) => void) => {
+    if (typeof cb !== 'function') return;
+    if (subscribers.indexOf(cb) === -1) subscribers.push(cb);
+    console.log('[BleFanout] 订阅注册, 当前 listener 数=', subscribers.length);
+  };
+
+  // 尝试 1: 直接赋值
+  let patched = false;
+  try {
+    W.onBLECharacteristicValueChange = newFn;
+    patched = (W.onBLECharacteristicValueChange === newFn);
+    console.log('[BleFanout] 直接赋值 patched=', patched);
+  } catch (e) {
+    console.warn('[BleFanout] 直接赋值抛错:', e);
+  }
+
+  // 尝试 2: defineProperty 强制定义
+  if (!patched) {
+    try {
+      Object.defineProperty(W, 'onBLECharacteristicValueChange', {
+        value: newFn, writable: true, configurable: true, enumerable: true,
+      });
+      patched = (W.onBLECharacteristicValueChange === newFn);
+      console.log('[BleFanout] defineProperty patched=', patched);
+    } catch (e) {
+      console.error('[BleFanout] defineProperty 也失败:', e);
+    }
+  }
+
+  if (!patched) {
+    console.error('[BleFanout] !! wx.onBLECharacteristicValueChange 无法被覆盖, fan-out 失效, 4 字段会继续空 !!');
+    return;
+  }
+
+  W.__bleFanoutInstalled = true;
+  W.__bleFanoutSubscribers = subscribers;
+
+  // 注册 master listener (走原始 fn, 此时未被替换)
+  try {
+    origBound((res: any) => {
+      for (const cb of subscribers) {
+        try { cb(res); } catch (err) { console.warn('[BleFanout] listener 抛错:', err); }
+      }
+    });
+    console.log('[BleFanout] master listener 已注册, fan-out 就绪');
+  } catch (e) {
+    console.error('[BleFanout] master listener 注册失败:', e);
+  }
+})();
+
 App<IAppOption>({
   globalData: {},
   onLaunch() {
