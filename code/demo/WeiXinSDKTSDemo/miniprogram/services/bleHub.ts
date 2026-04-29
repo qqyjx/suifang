@@ -54,12 +54,24 @@ class BleHub {
     veepooBle.veepooWeiXinSDKNotifyMonitorValueChange = (cb: Listener) => { this.listeners.push(cb); };
     veepooBle.veepooWeiXinSDKNotifyECGValueChange = (cb: Listener) => { this.ecgListeners.push(cb); };
 
-    // 诊断 listener: 把每条 type=N 回包打印出来, 方便排查未识别的数据类型 (尤其手动测量历史回包).
+    // 诊断 listener: 把每条 type=N 回包打印出来, 方便排查未识别的数据类型.
+    // 数组型 content (手动测量批量) 单独处理: 打 length + 首条 sample, 方便对照协议.
     this.listeners.push((e: any) => {
-      if (e && typeof e.type !== 'undefined') {
-        const c = e.content || {};
-        const keys = Object.keys(c).slice(0, 6).join(',');
-        console.log(`[BleHub] 收到 type=${e.type} 字段=${keys}`);
+      if (!e || typeof e.type === 'undefined') return;
+      const c = e.content;
+      const dt = e.dataType !== undefined ? ` dt=${e.dataType}` : '';
+      if (Array.isArray(c)) {
+        const sample = c.length ? JSON.stringify(c[0]).slice(0, 200) : '';
+        console.log(`[BleHub] type=${e.type}${dt} content=Array(len=${c.length}) sample=${sample}`);
+      } else if (c && typeof c === 'object') {
+        const fields = Object.keys(c)
+          .filter(k => typeof c[k] === 'number' || typeof c[k] === 'string')
+          .slice(0, 8)
+          .map(k => `${k}=${JSON.stringify(c[k])}`)
+          .join(' ');
+        console.log(`[BleHub] type=${e.type}${dt} ${fields}`);
+      } else {
+        console.log(`[BleHub] type=${e.type}${dt} content=${JSON.stringify(c)}`);
       }
     });
     this.listeners.push((e: any) => this.handleAutoSync(e));
@@ -88,6 +100,115 @@ class BleHub {
     if (changed) {
       wx.setStorageSync('VPDevice', snap);
       console.log('[BleHub] VPDevice 快照更新:', updates);
+    }
+  }
+
+  /**
+   * 手动测量历史批量回包: type=53/55/56, content 是数组.
+   * 用户在表上点 "开始测量" 完成的体征 (血压/心率/血氧/体温/血糖/HRV/血液成分),
+   * 表本地缓存; pullHistoryFromWatch 调 SDK 拉历史时, 表用这个批量接口回数据.
+   *
+   * 字段名按 SDK 文档示例兼容多种命名:
+   *   血压 dataType=0:
+   *     BasicData: {high, low, heartRate, status, credibility} 或
+   *     {bloodPressureHigh, bloodPressureLow, heartRate}
+   *   心率 dataType=1:
+   *     BasicData: {heartRate} 或 {heart}
+   *   血糖 dataType=2:
+   *     BasicData: {bloodGlucose} 或 {bloodSugar}
+   *   血氧 dataType=4:
+   *     BasicData: {bloodOxygen, heartRate} 或 {oxygen, heart}
+   *   体温 dataType=5:
+   *     BasicData: {bodyTemperature, skinTemperature} 或 {temperature}
+   *   微体检 (顶层结构, 不是 BasicData):
+   *     {heart, oxygen, bloodSugar, bodyTemperature, highPressure, lowPressure, hrv, ...}
+   */
+  private handleManualMeasurementBatch(e: any): void {
+    const c = e.content;
+    const dt = e.dataType;
+    if (!Array.isArray(c) || c.length === 0) {
+      console.log(`[BleHub] 手动测量批量 type=${e.type} dataType=${dt} 空数组, 跳过`);
+      return;
+    }
+    console.log(`[BleHub] 手动测量批量 type=${e.type} dataType=${dt} 共 ${c.length} 条, 开始落库`);
+
+    for (const item of c) {
+      const basic = item.BasicData || item.basicData || item;
+      let savedAs: string | null = null;
+
+      // 血压
+      if (dt === 0) {
+        const high = (typeof basic.high === 'number' ? basic.high :
+          (typeof basic.bloodPressureHigh === 'number' ? basic.bloodPressureHigh :
+          (typeof basic.systolic === 'number' ? basic.systolic :
+          (typeof basic.highPressure === 'number' ? basic.highPressure : undefined))));
+        const low = (typeof basic.low === 'number' ? basic.low :
+          (typeof basic.bloodPressureLow === 'number' ? basic.bloodPressureLow :
+          (typeof basic.diastolic === 'number' ? basic.diastolic :
+          (typeof basic.lowPressure === 'number' ? basic.lowPressure : undefined))));
+        if (typeof high === 'number' || typeof low === 'number') {
+          dataStorage.saveData('bloodPressure', {
+            systolic: high || 0,
+            diastolic: low || 0,
+            heartRate: basic.heartRate || basic.heart || 0,
+            measureStatus: basic.status || 0,
+          });
+          savedAs = 'bloodPressure';
+        }
+      }
+      // 心率
+      else if (dt === 1) {
+        const hr = typeof basic.heartRate === 'number' ? basic.heartRate :
+          (typeof basic.heart === 'number' ? basic.heart : undefined);
+        if (typeof hr === 'number' && hr > 0) {
+          dataStorage.saveData('heartRate', { heartRate: hr, heartState: basic.heartState || 0 });
+          savedAs = 'heartRate';
+        }
+      }
+      // 血糖
+      else if (dt === 2) {
+        const bg = typeof basic.bloodGlucose === 'number' ? basic.bloodGlucose :
+          (typeof basic.bloodSugar === 'number' ? basic.bloodSugar :
+          (typeof basic.glucose === 'number' ? basic.glucose : undefined));
+        if (typeof bg === 'number' && bg > 0) {
+          dataStorage.saveData('bloodGlucose', { bloodGlucose: bg, measureTime: basic.measureTime || '' });
+          savedAs = 'bloodGlucose';
+        }
+      }
+      // 血氧
+      else if (dt === 4) {
+        const ox = typeof basic.bloodOxygen === 'number' ? basic.bloodOxygen :
+          (typeof basic.oxygen === 'number' ? basic.oxygen :
+          (typeof basic.spo2 === 'number' ? basic.spo2 : undefined));
+        if (typeof ox === 'number' && ox > 0) {
+          dataStorage.saveData('bloodOxygen', {
+            bloodOxygen: ox,
+            heartRate: basic.heartRate || basic.heart || 0,
+            allDayData: [],
+          });
+          savedAs = 'bloodOxygen';
+        }
+      }
+      // 体温
+      else if (dt === 5) {
+        const tp = typeof basic.bodyTemperature === 'number' ? basic.bodyTemperature :
+          (typeof basic.temperature === 'number' ? basic.temperature : undefined);
+        if (typeof tp === 'number' && tp > 0) {
+          dataStorage.saveData('temperature', {
+            bodyTemperature: tp,
+            skinTemperature: basic.skinTemperature || basic.bodySurfaceTemperature || 0,
+            temperatureUnit: 'celsius',
+          });
+          savedAs = 'temperature';
+        }
+      }
+      // HRV / 血液成分 / 微体检 暂时只记录, 上传维度服务端尚未规划
+
+      if (savedAs) {
+        console.log(`[BleHub] 手动测量入库 dataType=${dt} -> ${savedAs} (ts=${item.timestamp || basic.timestamp})`);
+      } else {
+        console.warn(`[BleHub] 手动测量未落库 dataType=${dt} item=`, JSON.stringify(item).slice(0, 200));
+      }
     }
   }
 
@@ -139,6 +260,16 @@ class BleHub {
     }
     if (e.type === 9 && typeof c.step !== 'undefined') {
       this.updateDeviceSnapshot({ step: c.step, calorie: c.calorie, distance: c.distance });
+    }
+
+    // 手动测量历史批量回包 (pullHistoryFromWatch 调 veepooSendManualMeasurementDataReadManager 的结果).
+    // SDK 文档说 type=53, 实际 SDK 版本看到也有 type=55 / 56 等变种, 都按数据数组处理.
+    // content = Array<{timestamp, BasicData:{high, low, heartRate,...}, UserData}>
+    // 用户在表上手动按"开始测量"得到的血压/心率/血糖/血氧/体温, 表自己不主动 push type=18/30 等
+    // 实时回包, 必须靠这个批量接口才能拿回来 — 没 case 53 的话血压等永远落不到库.
+    if (e.type === 53 || e.type === 55 || e.type === 56) {
+      this.handleManualMeasurementBatch(e);
+      return;
     }
 
     let dataType: HealthDataType | null = null;
