@@ -82,8 +82,15 @@ def classify_bp(systolic, diastolic):
     if s >= 120 and d < 80:  return '偏高'
     return '正常'
 
-def to_chinese_record(data_type, data):
-    """单条测量 → 中文字段记录（含采集时间）"""
+def to_chinese_record(data_type, data, recorded_at=None, uploaded_at=None):
+    """单条测量 → 中文字段记录（含采集时间 + 上传时间）.
+
+    recorded_at: 客户端 saveData 调用时刻 (用户实际测量时刻);
+                 客户端 ISO 8601 字符串, 如 '2026-04-29T16:33:01.000Z'.
+                 不传时回退到 server 收到 POST 的时刻.
+    uploaded_at: server 收到 POST 的时刻 (UTC). 由 upsert_device_data 在调用
+                 本函数前固定时刻, 多类型同一批用同一值.
+    """
     if data_type == 'heartRate':
         record = {'心率值': data.get('heartRate', 0), '心率状态': data.get('heartState', 0)}
     elif data_type == 'bloodOxygen':
@@ -135,17 +142,20 @@ def to_chinese_record(data_type, data):
         record = dict(data)
     else:
         record = dict(data)
-    record['采集时间'] = datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.000Z')
+    # 采集时间: 优先用客户端 recordedAt (真实测量时刻); 缺省回退 server 收到时刻
+    record['采集时间'] = recorded_at or datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.000Z')
+    # 上传时间: server 收到 POST 的时刻 (一定是 server 端时刻, 防客户端时钟错乱)
+    record['上传时间'] = uploaded_at or datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.000Z')
     return record
 
 # ============ UPSERT 大 JSON 逻辑 ============
-def upsert_device_data(device_id, data_type, data):
+def upsert_device_data(device_id, data_type, data, recorded_at=None, uploaded_at=None):
     """一台设备一行：SELECT-merge-UPSERT"""
     chinese_key = TYPE_TO_CHINESE.get(data_type)
     if not chinese_key:
         return None, '未知数据类型: {}'.format(data_type)
 
-    new_record = to_chinese_record(data_type, data)
+    new_record = to_chinese_record(data_type, data, recorded_at=recorded_at, uploaded_at=uploaded_at)
     conn = get_connection()
     try:
         cur = conn.cursor()
@@ -367,13 +377,22 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                 device_id = body.get('deviceId', DEFAULT_DEVICE_ID)
                 data_type = body.get('dataType')
                 data = body.get('data')
+                # 客户端 4.29-v5+ 携带的双时间戳:
+                #   recordedAt = saveData 调用时刻 (= 用户在表上测量时刻, 经 BleHub 收到回包时填)
+                #   uploadedAt = postOnce 发送时刻 (客户端) — 服务端记录自己收到的时刻更可靠
+                # 缺省 (老客户端) 时用 server 当前时刻当采集时间, 兼容旧版本.
+                recorded_at = body.get('recordedAt')
+                # 服务端权威 uploadedAt: 用 server 收到时刻, 不信客户端的 (防时钟漂移)
+                uploaded_at = datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.000Z')
                 if not data_type or data is None:
                     self._send_json(400, {
                         'error': 'Required fields: dataType, data',
                         'supportedTypes': list(TYPE_TO_CHINESE.keys()),
                     })
                     return
-                result, err = upsert_device_data(device_id, data_type, data)
+                result, err = upsert_device_data(device_id, data_type, data,
+                                                  recorded_at=recorded_at,
+                                                  uploaded_at=uploaded_at)
                 if err:
                     self._send_json(400, {'error': err, 'supportedTypes': list(TYPE_TO_CHINESE.keys())})
                     return
