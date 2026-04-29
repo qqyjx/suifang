@@ -30,11 +30,15 @@ const DATA_ROOT = `${wx.env.USER_DATA_PATH}/health_data`;
 class DataStorageService {
   private static readonly PENDING_KEY = 'sync_pending_queue';
   private static readonly MAX_QUEUE = 500;
+  // 2h 批量上传一次, 23:59 兜底再清一次 (用户需求: 不实时打数据库, 减压).
+  private static readonly BATCH_INTERVAL_MS = 2 * 3600 * 1000;
 
   private fs: WechatMiniprogram.FileSystemManager;
   private httpEnabled: boolean = true;
   // BLE 连接成功后由 resolveDeviceId() 异步填充，断开时由 resetDeviceIdCache() 清空
   private deviceIdCache: number | null = null;
+  private batchTimer: any = null;
+  private endOfDayTimer: any = null;
 
   constructor() {
     this.fs = wx.getFileSystemManager();
@@ -183,13 +187,31 @@ class DataStorageService {
     // 保存到本地文件系统
     const localSaved = this.writeDataFile(filePath, fileContent);
 
-    // 尝试同步到WSL HTTP服务器
+    // 入待上传队列, 不实时上传; 2h 定时器 / 23:59 兜底 / app.onShow 触发 batch flush.
     if (this.httpEnabled) {
-      void this.syncToServer(type, record, dateStr);
+      void this.enqueueForBatch(type, record, dateStr);
     }
 
-    console.log(`[DataStorage] 保存${type}数据:`, localSaved ? '成功' : '失败');
+    console.log(`[DataStorage] 保存${type}数据 (入待传队列):`, localSaved ? '成功' : '失败');
     return localSaved;
+  }
+
+  /**
+   * 把一条采集记录入 pending 队列, 等 batch 时机统一上传.
+   * 在入队时记录 recordedAt = 采集时刻; postOnce 上传时再加 uploadedAt.
+   * deviceId 在入队时解析 (resolveDeviceId 缓存稳定; BLE 断开时由 resetDeviceIdCache 清).
+   */
+  private async enqueueForBatch<T>(type: HealthDataType, data: T, date: string): Promise<void> {
+    const deviceId = await this.resolveDeviceId();
+    const payload = {
+      dataType: type,
+      data,
+      date,
+      patientId: 1, // v1 简化: 一对一假设, 全挂 patient 1
+      deviceId,
+      recordedAt: this.getTimestamp(),
+    };
+    this.enqueuePending(payload);
   }
 
   /**
@@ -228,14 +250,17 @@ class DataStorageService {
   }
 
   /**
-   * 包装 wx.request 为 Promise，2xx 成功，其他视为失败
+   * 包装 wx.request 为 Promise，2xx 成功，其他视为失败.
+   * 每次实际 POST 时给 payload 加 uploadedAt (上传时间),
+   * 配合 enqueueForBatch 写入的 recordedAt (采集时间), 服务端两个时间都能记录.
    */
   private postOnce(payload: any): Promise<void> {
+    const finalPayload = { ...payload, uploadedAt: this.getTimestamp() };
     return new Promise((resolve, reject) => {
       wx.request({
         url: `${WSL_SERVER_URL}/api/health-data`,
         method: 'POST',
-        data: payload,
+        data: finalPayload,
         success: (res: any) => {
           if (res.statusCode >= 200 && res.statusCode < 300) resolve();
           else reject(new Error(`HTTP ${res.statusCode}`));
@@ -243,6 +268,65 @@ class DataStorageService {
         fail: (err: any) => reject(new Error(err?.errMsg || 'wx.request fail'))
       });
     });
+  }
+
+  /**
+   * 启动批量上传调度: 每 2h flush + 当天 23:59 兜底 flush.
+   *
+   * 稳定性策略 (用户强调"链路不能挂"): 单一定时器小程序后台会冻结,
+   * 所以叠加多重 flush 触发, 任一种能跑到都行:
+   *   1. 2h setInterval (前台运行时)
+   *   2. 23:59 setTimeout (前台运行时, 算 delay 到 23:59:00)
+   *   3. app.onShow 触发 (在 app.ts 里, 用户开关小程序就 flush)
+   *   4. 网络从离线恢复触发 (在 app.ts onNetworkStatusChange)
+   *   5. BLE 连接 / 重连成功触发 (待加, 由 bleConnection / app.onShow 重连成功调用)
+   *   6. pending 队列堆到 80 条强制 flush (兜底, 防 BLE 长断 + 小程序长时间不用)
+   * 调用方 (app.ts onLaunch + onShow) 反复调本方法是幂等的:
+   * 每次都先 clear 旧 timer 再设新 timer, 不会泄漏.
+   */
+  public startBatchSync(): void {
+    // 清旧 timer 避免泄漏
+    if (this.batchTimer) { clearInterval(this.batchTimer); this.batchTimer = null; }
+    if (this.endOfDayTimer) { clearTimeout(this.endOfDayTimer); this.endOfDayTimer = null; }
+
+    // 启动 2h 定时
+    this.batchTimer = setInterval(() => {
+      console.log('[DataStorage] 2h 定时 flush 触发');
+      void this.flushPending().then(r => {
+        if (r.ok > 0 || r.fail > 0) console.log('[DataStorage] 2h flush 结果:', r);
+      });
+    }, DataStorageService.BATCH_INTERVAL_MS);
+
+    // 23:59 兜底
+    this.scheduleEndOfDayFlush();
+
+    // 启动时立即 flush 一次 (启动后第一拨堆积一次性清掉)
+    void this.flushPending().then(r => {
+      if (r.ok > 0 || r.fail > 0) console.log('[DataStorage] 启动 flush 结果:', r);
+    });
+    console.log(`[DataStorage] 批量调度已启动 (2h 定时 + 23:59 兜底)`);
+  }
+
+  /**
+   * 算到当天 23:59:00 的剩余 ms, setTimeout 触发一次 flushPending,
+   * 跑完递归排明天的 23:59. 防止跨日漏数据.
+   */
+  private scheduleEndOfDayFlush(): void {
+    if (this.endOfDayTimer) { clearTimeout(this.endOfDayTimer); this.endOfDayTimer = null; }
+    const now = new Date();
+    const eod = new Date(now);
+    eod.setHours(23, 59, 0, 0);
+    let delay = eod.getTime() - now.getTime();
+    if (delay <= 0) delay += 24 * 3600 * 1000; // 已过 23:59, 排到明天
+    this.endOfDayTimer = setTimeout(() => {
+      console.log('[DataStorage] 23:59 兜底 flush 触发');
+      void this.flushPending().then(r => {
+        if (r.ok > 0 || r.fail > 0) console.log('[DataStorage] 23:59 flush 结果:', r);
+        // 再排明天
+        this.scheduleEndOfDayFlush();
+      });
+    }, delay);
+    console.log(`[DataStorage] 23:59 兜底已排, ${Math.round(delay / 60000)} 分钟后触发`);
   }
 
   /**
@@ -296,7 +380,8 @@ class DataStorageService {
   }
 
   /**
-   * 失败的同步进队，超出 MAX_QUEUE 丢最旧的（LRU）
+   * 入待传队列, 超出 MAX_QUEUE 丢最旧的（LRU）.
+   * 入队后如果队列堆到阈值 (80 条), 立即 flush 一次, 防止小程序长时间不用导致积压.
    */
   private enqueuePending(payload: any): void {
     const queue: any[] = wx.getStorageSync(DataStorageService.PENDING_KEY) || [];
@@ -305,6 +390,11 @@ class DataStorageService {
       queue.splice(0, queue.length - DataStorageService.MAX_QUEUE);
     }
     wx.setStorageSync(DataStorageService.PENDING_KEY, queue);
+    // 队列阈值兜底: 防长断网+长不开小程序导致 2h 定时不触发, 数据无限堆.
+    if (queue.length >= 80) {
+      console.log(`[DataStorage] pending 队列堆到 ${queue.length} 条, 触发紧急 flush`);
+      void this.flushPending();
+    }
   }
 
   /**

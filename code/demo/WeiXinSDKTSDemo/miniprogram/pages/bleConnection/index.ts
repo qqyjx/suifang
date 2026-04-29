@@ -225,7 +225,13 @@ Page({
               if (wx.getStorageSync('VPDevice')) return;
               try { veepooFeature.veepooBlePasswordCheckManager(); console.log('[bleConnection] 密钥核准 #3 (VPDevice 仍空)'); } catch(e){}
             }, 4000);
-            // 拉手表 3 天本地缓存 (走 BleHub.handleAutoSync -> dataStorage.saveData -> 上传六元)
+            // 一键打开心率/血氧/体温自动监测开关 (出厂值不可信, 强写一次).
+            // 放在密钥核准 #2/#3 之间, type=1 应已回, deviceId 内部上下文就绪.
+            setTimeout(() => {
+              try { require('../../services/bleHub').bleHub.enableAutoMonitoring(); }
+              catch (err) { console.warn('[bleConnection] enableAutoMonitoring 失败', err); }
+            }, 3000);
+            // 拉手表 3 天本地缓存 (走 BleHub.handleAutoSync -> dataStorage.saveData -> pending -> 2h batch 上传)
             setTimeout(() => {
               try {
                 const { bleHub } = require('../../services/bleHub');

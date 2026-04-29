@@ -407,6 +407,39 @@ class BleHub {
   }
 
   /**
+   * 自动监测开关一键打开 (心率 / 血氧 / 体温).
+   * 设备出厂可能默认开, 也可能被用户/上次设置关掉. 不依赖默认值, 直接强写一次.
+   *
+   * 心率 + 体温 走 veepooSendAutoTestSwitchDataManager (一次设多个开关);
+   * 血氧 单独 API veepooSendBloodOxygenAutoTestDataManager (要带时段, 设全天 00:00-23:59).
+   *
+   * 调用时机: BLE 密钥核准成功 (type=1 收到) 之后, 太早调 SDK 会以 deviceId 缺失失败.
+   * 推荐放在 connect 成功 + 密钥核准 #1 后 ~3s.
+   */
+  enableAutoMonitoring(): void {
+    try {
+      veepooFeature.veepooSendAutoTestSwitchDataManager({
+        heartRate: 'start',
+        bodyTemperature: 'start',
+      });
+      console.log('[BleHub] 自动监测开关 -> 心率/体温 已写 start');
+    } catch (e) {
+      console.warn('[BleHub] AutoTestSwitch 写入失败:', e);
+    }
+    try {
+      veepooFeature.veepooSendBloodOxygenAutoTestDataManager({
+        switch: 'start',
+        startTime: '00:00',
+        endTime: '23:59',
+        deviceControl: 'setup',
+      });
+      console.log('[BleHub] 自动监测开关 -> 血氧 已写 start (00:00-23:59 全天)');
+    } catch (e) {
+      console.warn('[BleHub] BloodOxygenAutoTest 写入失败:', e);
+    }
+  }
+
+  /**
    * 强制订阅所有 notify 特征值. 修 iOS already-connected 场景:
    *   SDK connect API 看到 BLE 已连就短路返回 result.connection=true,
    *   但内部跳过 wx.notifyBLECharacteristicValueChange 步骤

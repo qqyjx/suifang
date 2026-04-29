@@ -86,6 +86,10 @@ App<IAppOption>({
     // 之后页面调 veepooBle.veepooWeiXinSDKNotifyMonitorValueChange 都进 hub 而不会互相覆盖.
     bleHub.init();
 
+    // 启动数据批量上传调度: 2h 一次 + 23:59 兜底 (用户需求, 减少六元数据库写压力).
+    // 多重 flush 触发: 这里启动定时器 + onShow 触发 + 网络恢复 + 重连成功 + 队列堆 80 条紧急.
+    dataStorage.startBatchSync();
+
     wx.setStorageSync('connectionStatus', true)
     vpJLBle.init();
     // 体验版自动开 vConsole；正式版关闭防止用户看到内部日志
@@ -121,14 +125,15 @@ App<IAppOption>({
             try { veepooFeature.veepooBlePasswordCheckManager(); }
             catch (e) { console.warn('[App.onShow] 密钥核准失败', e); }
           }, 800);
+          // 强写心率/血氧/体温自动监测开关 (出厂值不可信)
+          setTimeout(() => bleHub.enableAutoMonitoring(), 1500);
           // 拉手表本地缓存的 3 天日常数据 (用户在表上自测的指标兜底). 等密钥核准后再拉, 否则 SDK 不响应.
           setTimeout(() => bleHub.pullHistoryFromWatch(), 2500);
         }
       });
     }
-    // 顺便刷 pending 队列（有可能离线时积了几条）
-    dataStorage.flushPending().then(r => {
-      if (r.ok > 0 || r.fail > 0) console.log('[Sync] App.onShow 补传', r);
-    });
+    // 顺便刷 pending 队列（有可能离线时积了几条）+ 重新拉起 batch scheduler
+    // (小程序后台被挂起会冻结 setInterval/setTimeout, onShow 时必须重置).
+    dataStorage.startBatchSync(); // 内部会立即 flush 一次 + 重置 2h/23:59 定时
   },
 })
