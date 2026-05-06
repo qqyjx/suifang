@@ -12,19 +12,24 @@
 
 API 端点：
 - GET  /api/status                       服务状态 + MySQL 连接
-- GET  /api/data                         查询所有设备的大 JSON
+- GET  /api/data                         查询所有设备的大 JSON (?wxOpenid= 过滤)
 - POST /api/health-data                  写入一条体征记录（自动 UPSERT 到大 JSON 数组）
 - POST /api/device/register              按 mac (优先) 或 device_sign UPSERT 到 wearable_device，返回 deviceId
 - POST /api/device/merge                 合并 wearable_device_data 两行: {fromDeviceId, toDeviceId}
+- POST /api/wx/login                     微信登录: code -> openid (走 jscode2session)
 - GET  /api/device/by-sign?sign=...      按 sign 查 wearable_device（不创建）
 - DELETE /api/device/:id                 删 wearable_device 一行 + 联动删该 deviceId 的所有数据
 
 部署：scp 本文件到 192.168.4.104:/opt/suifang/health_server.py，systemd 启动
+配置: WX_APPSECRET 通过环境变量传 (suifang.service 里 Environment= 配置)
 """
+import os
 import json
 import re
 import datetime
 import traceback
+import urllib.request
+import urllib.parse
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 import pymysql
@@ -42,6 +47,12 @@ DB_CONFIG = {
     'autocommit': True,
 }
 DEFAULT_DEVICE_ID = 1
+
+# ============ 微信小程序登录配置 (5.06-v7) ============
+# WX_APPSECRET 必须从 mp.weixin.qq.com → 开发管理 → 开发设置 取 (敏感, 不入仓);
+# 通过 systemd Environment= 或环境变量注入.
+WX_APPID = os.environ.get('WX_APPID') or 'wxbc5453a4c53dbee8'
+WX_APPSECRET = os.environ.get('WX_APPSECRET') or ''
 
 # 数据类型 → 中文键名（10 类，未含 daily）
 TYPE_TO_CHINESE = {
@@ -73,6 +84,40 @@ def test_db():
         return True, count
     except Exception as e:
         return False, str(e)
+
+def ensure_openid_column():
+    """5.06-v7: 确保 wearable_device_data 表有 wx_openid 列 (idempotent).
+
+    多患者轮流用同一台手表的需求 (入组研究): 按 (deviceId, wx_openid) 二维 key 切片,
+    每个 (设备, 微信用户) 一行大 JSON. 历史行 wx_openid=NULL 视作"未分组"保留.
+
+    注意不加 UNIQUE 约束: 历史 deviceId=4/6/7 三行都是 wx_openid=NULL, 加 UNIQUE 会冲突.
+    只用普通复合 INDEX 加速查询, 唯一性靠 upsert_device_data 的 SELECT-UPSERT 流程保证.
+    """
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT COUNT(*) FROM information_schema.COLUMNS "
+            "WHERE TABLE_SCHEMA = %s AND TABLE_NAME = 'wearable_device_data' "
+            "AND COLUMN_NAME = 'wx_openid'",
+            (DB_CONFIG['database'],)
+        )
+        if cur.fetchone()[0] == 0:
+            print('[启动] wearable_device_data.wx_openid 不存在, 添加中...')
+            cur.execute('ALTER TABLE wearable_device_data ADD COLUMN wx_openid VARCHAR(64) DEFAULT NULL')
+            try:
+                cur.execute('ALTER TABLE wearable_device_data ADD INDEX idx_dev_openid (deviceId, wx_openid)')
+            except Exception as e:
+                print('[启动] idx_dev_openid 索引添加失败 (可忽略):', e)
+            print('[启动] wearable_device_data.wx_openid 列添加完成')
+        else:
+            print('[启动] wearable_device_data.wx_openid 列已存在, 跳过 ALTER')
+        cur.close()
+    except Exception as e:
+        print('[启动] ensure_openid_column 失败:', e)
+    finally:
+        conn.close()
 
 def ensure_mac_column():
     """5.06-v6: 确保 wearable_device 表有 mac 列 (idempotent).
@@ -182,8 +227,12 @@ def to_chinese_record(data_type, data, recorded_at=None, uploaded_at=None):
     return record
 
 # ============ UPSERT 大 JSON 逻辑 ============
-def upsert_device_data(device_id, data_type, data, recorded_at=None, uploaded_at=None):
-    """一台设备一行：SELECT-merge-UPSERT"""
+def upsert_device_data(device_id, data_type, data, wx_openid=None, recorded_at=None, uploaded_at=None):
+    """一台设备一个微信号一行：SELECT-merge-UPSERT.
+
+    5.06-v7: 二维 key (deviceId, wx_openid). NULL 也算独立分组 (历史数据).
+    多患者用同一台手表 -> 同 deviceId 不同 wx_openid -> 多行.
+    """
     chinese_key = TYPE_TO_CHINESE.get(data_type)
     if not chinese_key:
         return None, '未知数据类型: {}'.format(data_type)
@@ -192,10 +241,19 @@ def upsert_device_data(device_id, data_type, data, recorded_at=None, uploaded_at
     conn = get_connection()
     try:
         cur = conn.cursor()
-        cur.execute(
-            'SELECT id, data FROM wearable_device_data WHERE deviceId = %s LIMIT 1',
-            (device_id,)
-        )
+        # 二维 key 查找: 给定 wx_openid 命中该 (设备, 用户) 行; 没传 wx_openid 命中 NULL 行.
+        if wx_openid:
+            cur.execute(
+                'SELECT id, data FROM wearable_device_data '
+                'WHERE deviceId = %s AND wx_openid = %s LIMIT 1',
+                (device_id, wx_openid)
+            )
+        else:
+            cur.execute(
+                'SELECT id, data FROM wearable_device_data '
+                'WHERE deviceId = %s AND wx_openid IS NULL LIMIT 1',
+                (device_id,)
+            )
         row = cur.fetchone()
 
         big_json = {}
@@ -225,11 +283,13 @@ def upsert_device_data(device_id, data_type, data, recorded_at=None, uploaded_at
                 'type': chinese_key,
                 'totalTypes': len(big_json),
                 'count': len(big_json[chinese_key]),
+                'wxOpenid': wx_openid,
             }
         else:
             cur.execute(
-                'INSERT INTO wearable_device_data (deviceId, data, createTime) VALUES (%s, %s, %s)',
-                (device_id, big_json_str, now_str)
+                'INSERT INTO wearable_device_data (deviceId, wx_openid, data, createTime) '
+                'VALUES (%s, %s, %s, %s)',
+                (device_id, wx_openid, big_json_str, now_str)
             )
             result = {
                 'action': 'insert',
@@ -237,11 +297,42 @@ def upsert_device_data(device_id, data_type, data, recorded_at=None, uploaded_at
                 'type': chinese_key,
                 'totalTypes': len(big_json),
                 'count': 1,
+                'wxOpenid': wx_openid,
             }
         cur.close()
         return result, None
     finally:
         conn.close()
+
+# ============ 微信 jscode2session (5.06-v7) ============
+def wx_jscode2session(js_code):
+    """code -> openid + session_key. AppSecret 走环境变量, 不入仓.
+
+    返回 ({openid, session_key, unionid?}, None) 或 (None, error_msg).
+    session_key 仅服务端使用 (后续可能要解密 phone_number 等), 不下发前端.
+    """
+    if not WX_APPSECRET:
+        return None, 'WX_APPSECRET 未配置, 请在 systemd unit 加 Environment="WX_APPSECRET=xxx" 后重启服务'
+    if not js_code:
+        return None, '缺少 code'
+    url = 'https://api.weixin.qq.com/sns/jscode2session?' + urllib.parse.urlencode({
+        'appid': WX_APPID,
+        'secret': WX_APPSECRET,
+        'js_code': js_code,
+        'grant_type': 'authorization_code',
+    })
+    try:
+        with urllib.request.urlopen(url, timeout=8) as resp:
+            payload = json.loads(resp.read().decode('utf-8'))
+        if 'openid' in payload:
+            return {
+                'openid': payload['openid'],
+                'session_key': payload.get('session_key', ''),
+                'unionid': payload.get('unionid', ''),
+            }, None
+        return None, 'jscode2session 返回错: {}'.format(payload)
+    except Exception as e:
+        return None, 'jscode2session 调用失败: {}'.format(e)
 
 # ============ 设备名册（wearable_device）======================
 def device_register(device_sign, device_type=1, mac=None):
@@ -468,13 +559,33 @@ class HealthDataHandler(BaseHTTPRequestHandler):
             })
 
         elif pathname == '/api/data':
+            # 5.06-v7: 支持 ?wxOpenid= 过滤. 不传 -> 返回所有行 (含 NULL).
+            #          传 'NULL' (字符串) -> 仅返回 wx_openid IS NULL 的历史行.
+            wx_openid_filter = (query.get('wxOpenid') or [None])[0]
             try:
                 conn = get_connection()
                 cur = conn.cursor()
-                cur.execute('SELECT id, deviceId, data, createTime FROM wearable_device_data ORDER BY deviceId, createTime')
+                if wx_openid_filter == 'NULL':
+                    cur.execute(
+                        'SELECT id, deviceId, wx_openid, data, createTime '
+                        'FROM wearable_device_data WHERE wx_openid IS NULL '
+                        'ORDER BY deviceId, createTime'
+                    )
+                elif wx_openid_filter:
+                    cur.execute(
+                        'SELECT id, deviceId, wx_openid, data, createTime '
+                        'FROM wearable_device_data WHERE wx_openid = %s '
+                        'ORDER BY deviceId, createTime',
+                        (wx_openid_filter,)
+                    )
+                else:
+                    cur.execute(
+                        'SELECT id, deviceId, wx_openid, data, createTime '
+                        'FROM wearable_device_data ORDER BY deviceId, createTime'
+                    )
                 rows = []
                 for r in cur.fetchall():
-                    big_json = json.loads(r[2]) if r[2] else {}
+                    big_json = json.loads(r[3]) if r[3] else {}
                     type_counts = {}
                     if isinstance(big_json, dict):
                         for k, v in big_json.items():
@@ -483,9 +594,10 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                     rows.append({
                         'id': r[0],
                         'deviceId': r[1],
+                        'wxOpenid': r[2],
                         'data': big_json,
                         'typeCounts': type_counts,
-                        'createTime': r[3].strftime('%Y-%m-%d %H:%M:%S') if r[3] else None,
+                        'createTime': r[4].strftime('%Y-%m-%d %H:%M:%S') if r[4] else None,
                     })
                 cur.close()
                 conn.close()
@@ -507,13 +619,15 @@ class HealthDataHandler(BaseHTTPRequestHandler):
         else:
             self._send_json(200, {
                 'service': '智能随访-可穿戴设备数据接收服务',
-                'mode': '一台设备一行 + 大 JSON 汇总',
+                'mode': '一台设备一个微信用户一行 + 大 JSON 汇总',
+                'version': '5.06-v7',
                 'endpoints': {
                     'GET  /api/status': '服务状态',
-                    'GET  /api/data': '查询所有设备',
-                    'POST /api/health-data': 'UPSERT 体征数据',
+                    'GET  /api/data': '查询所有设备 (?wxOpenid= 过滤, =NULL 仅历史未分组数据)',
+                    'POST /api/health-data': 'UPSERT 体征数据 (按 deviceId+wxOpenid 切片)',
                     'POST /api/device/register': '按 mac (优先) 或 device_sign UPSERT 到 wearable_device 并返回 deviceId',
                     'POST /api/device/merge': '合并 wearable_device_data 两行: {fromDeviceId, toDeviceId}',
+                    'POST /api/wx/login': '微信小程序 code -> openid (走 jscode2session, 需 WX_APPSECRET)',
                     'GET  /api/device/by-sign?sign=...': '按 sign 查 wearable_device（不创建）',
                     'DELETE /api/device/:id': '删 wearable_device 一行 + 联动删该 deviceId 的所有数据',
                 },
@@ -536,6 +650,8 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                 device_id = body.get('deviceId', DEFAULT_DEVICE_ID)
                 data_type = body.get('dataType')
                 data = body.get('data')
+                # 5.06-v7: 客户端在 wx.login 后带 wxOpenid, 服务端按 (deviceId, wxOpenid) 切片入库
+                wx_openid = body.get('wxOpenid') or None
                 # 客户端 4.29-v5+ 携带的双时间戳:
                 #   recordedAt = saveData 调用时刻 (= 用户在表上测量时刻, 经 BleHub 收到回包时填)
                 #   uploadedAt = postOnce 发送时刻 (客户端) — 服务端记录自己收到的时刻更可靠
@@ -550,20 +666,34 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                     })
                     return
                 result, err = upsert_device_data(device_id, data_type, data,
+                                                  wx_openid=wx_openid,
                                                   recorded_at=recorded_at,
                                                   uploaded_at=uploaded_at)
                 if err:
                     self._send_json(400, {'error': err, 'supportedTypes': list(TYPE_TO_CHINESE.keys())})
                     return
-                print('[{}] {} 设备{} {}({}条) 总{}类'.format(
+                print('[{}] {} 设备{} 用户{} {}({}条) 总{}类'.format(
                     datetime.datetime.now().strftime('%H:%M:%S'),
                     result['action'].upper(),
                     device_id,
+                    (wx_openid[:8] + '...') if wx_openid else 'NULL',
                     result['type'],
                     result['count'],
                     result['totalTypes'],
                 ))
                 self._send_json(200, {'success': True, **result, 'deviceId': device_id})
+
+            elif pathname == '/api/wx/login':
+                code = body.get('code')
+                result, err = wx_jscode2session(code)
+                if err:
+                    self._send_json(400, {'error': err})
+                else:
+                    # session_key 仅服务端保留, 不下发前端
+                    self._send_json(200, {
+                        'openid': result['openid'],
+                        'unionid': result.get('unionid', ''),
+                    })
 
             elif pathname == '/api/device/register':
                 device_sign = body.get('deviceSign')
@@ -626,18 +756,26 @@ if __name__ == '__main__':
         print('[启动] MySQL 连接成功 → {}, 当前 {} 行体征数据'.format(DB_CONFIG['host'], info))
         # 5.06-v6: 启动时确保 mac 列存在 (idempotent), 后续 register 走 mac 优先匹配
         ensure_mac_column()
+        # 5.06-v7: 启动时确保 wx_openid 列存在 (idempotent), 多患者按 (deviceId, openid) 切片
+        ensure_openid_column()
     else:
         print('[警告] MySQL 连接失败 → {}: {}'.format(DB_CONFIG['host'], info))
 
+    if WX_APPSECRET:
+        print('[启动] WX_APPSECRET 已配置 (长度 {}), /api/wx/login 可用'.format(len(WX_APPSECRET)))
+    else:
+        print('[警告] WX_APPSECRET 未配置, /api/wx/login 会拒绝请求. systemd 加 Environment="WX_APPSECRET=xxx" 后重启')
+
     server = HTTPServer(('0.0.0.0', PORT), HealthDataHandler)
-    print('[启动] 智能随访数据接收服务: http://0.0.0.0:{}'.format(PORT))
-    print('[模式] 一台设备一行 + 大 JSON 汇总（10 类体征 + 1 日综合）')
-    print('[端点] POST /api/health-data       UPSERT 体征数据')
+    print('[启动] 智能随访数据接收服务 v5.06-v7: http://0.0.0.0:{}'.format(PORT))
+    print('[模式] 一台设备一个微信用户一行 + 大 JSON 汇总')
+    print('[端点] POST /api/health-data       UPSERT 体征数据 (deviceId+wxOpenid 切片)')
+    print('[端点] POST /api/wx/login          code -> openid (jscode2session)')
     print('[端点] POST /api/device/register   设备名册 UPSERT (mac 优先)')
     print('[端点] POST /api/device/merge      合并 wearable_device_data 两行')
     print('[端点] GET  /api/device/by-sign    设备名册查询')
     print('[端点] GET  /api/status            服务状态')
-    print('[端点] GET  /api/data              查询所有设备')
+    print('[端点] GET  /api/data              查询所有设备 (?wxOpenid= 过滤)')
     try:
         server.serve_forever()
     except KeyboardInterrupt:

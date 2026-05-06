@@ -212,26 +212,34 @@ class DataStorageService {
    */
   private async enqueueForBatch<T>(type: HealthDataType, data: T, date: string): Promise<void> {
     const deviceId = await this.resolveDeviceId();
-    const payload = {
+    // 5.06-v7: wxOpenid 由 app.ts ensureWxOpenid 异步写 storage; 没就绪暂留 pending.
+    const wxOpenid: string = (wx.getStorageSync('wxOpenid') as string) || '';
+    const payload: any = {
       dataType: type,
       data,
       date,
-      patientId: 1, // v1 简化: 一对一假设, 全挂 patient 1
+      patientId: 1, // v1 简化: 与 wxOpenid 一一对应; 真 patient_id 由六元医生端绑定
       deviceId,
+      wxOpenid,
       recordedAt: this.getTimestamp(),
     };
     // 先入队 (立即写 storage, 防 POST 没回时小程序被挂起丢数据)
     this.enqueuePending(payload);
-    // mac 还没就绪 -> 不上传, 等 BleHub.handleAutoSync 收到 type=1 触发 flushPending.
+    // mac 或 openid 任一未就绪 -> 不上传. mac 等 type=1 回包; openid 等 /api/wx/login 回来.
+    // 两者就绪后会分别触发 flushPending (BleHub.handleAutoSync / app.ts ensureWxOpenid).
     if (deviceId < 0) {
       console.log(`[DataStorage] mac 未就绪, ${type} 暂留 pending 等 type=1 回包后自动重传`);
+      return;
+    }
+    if (!wxOpenid) {
+      console.log(`[DataStorage] wxOpenid 未就绪, ${type} 暂留 pending 等 /api/wx/login 后自动重传`);
       return;
     }
     // 立即试一次 POST. 成功 -> 从队列移除; 失败 -> 留队列等 batch flush 重试.
     try {
       await this.postOnce(payload);
       this.removeFromPending(payload);
-      console.log(`[DataStorage] 实时上传 ${type} 成功 (deviceId=${deviceId})`);
+      console.log(`[DataStorage] 实时上传 ${type} 成功 (deviceId=${deviceId}, wxOpenid=${wxOpenid.slice(0,8)}...)`);
     } catch (err) {
       console.log(`[DataStorage] 实时上传 ${type} 失败, 留 pending 等 batch 重试:`, err);
     }
@@ -469,6 +477,15 @@ class DataStorageService {
           continue;
         }
         payload.deviceId = did;
+      }
+      // 5.06-v7: wxOpenid 缺 -> 重读 storage. 仍空 -> 留队列等 ensureWxOpenid 写入后再 flush.
+      if (!payload.wxOpenid) {
+        const openid: string = (wx.getStorageSync('wxOpenid') as string) || '';
+        if (!openid) {
+          remaining.push(item);
+          continue;
+        }
+        payload.wxOpenid = openid;
       }
       try {
         await this.postOnce(payload);

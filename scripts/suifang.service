@@ -11,6 +11,11 @@ WorkingDirectory=/opt/suifang
 # 所以不能依赖 PATH 解析，用绝对路径
 # CentOS 7 的 systemd 219 不支持 StandardOutput=append:/...（240+ 才有），
 # 用 /bin/sh -c 包一层做重定向，并 exec 替换让 systemd 直接管 python 进程
+#
+# 5.06-v7: 微信小程序 jscode2session 需要 WX_APPSECRET, 走 EnvironmentFile 读
+# /opt/suifang/wx.env (内容: WX_APPSECRET=xxx, 一行一对). 文件不存在不报错 (=-),
+# 此时 /api/wx/login 会返回明确错误提示, 不影响其他端点.
+EnvironmentFile=-/opt/suifang/wx.env
 ExecStart=/bin/sh -c 'exec /root/miniconda3/bin/python3 /opt/suifang/health_server.py >> /opt/suifang/server.log 2>&1'
 Restart=on-failure
 RestartSec=5
