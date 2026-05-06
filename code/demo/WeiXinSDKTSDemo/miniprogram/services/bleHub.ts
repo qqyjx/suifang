@@ -120,9 +120,11 @@ class BleHub {
           wx.showToast({ title: '蓝牙已关闭, 数据无法同步', icon: 'none', duration: 3000 });
           this.bleConnected = false;
           dataStorage.resetDeviceIdCache();
+          dataStorage.reportBleEvent('adapter_off', { success: false });
         } else if (!wasAvailable && this.adapterAvailable) {
           // 蓝牙刚被重开 → 触发自动重连
           wx.showToast({ title: '蓝牙已恢复, 正在重连…', icon: 'none', duration: 2000 });
+          dataStorage.reportBleEvent('adapter_on', { success: true });
           this.requestReconnect('adapter-recovered');
         }
       });
@@ -147,6 +149,7 @@ class BleHub {
         console.log('[BleHub] connection state', e);
         if (wasConnected && !this.bleConnected) {
           dataStorage.resetDeviceIdCache();
+          dataStorage.reportBleEvent('connection_lost', { success: false });
           if (!wx.getStorageSync('userDisconnected')) {
             this.requestReconnect('connection-lost');
           }
@@ -178,6 +181,7 @@ class BleHub {
         console.warn('[BleHub] 心跳: 90s 无回包, 视为通道暗断, 触发重连');
         this.bleConnected = false;
         this.lastPacketAt = 0;
+        dataStorage.reportBleEvent('heartbeat_timeout', { success: false });
         this.requestReconnect('heartbeat-timeout');
       }
     }, 30000);
@@ -230,6 +234,7 @@ class BleHub {
   private tryReconnectOnce(bleInfo: any): void {
     this.reconnectAttempt++;
     const attempt = this.reconnectAttempt;
+    const startedAt = Date.now();  // 5.06-v8 埋点: 重连耗时
     this.reconnectInProgress = true;
     console.log(`[BleHub] 重连尝试 #${attempt}`);
     try {
@@ -253,6 +258,14 @@ class BleHub {
           catch (e) { console.warn('[BleHub] reconnect 密钥核准抛错', e); }
           setTimeout(() => this.enableAutoMonitoring(), 1000);
           setTimeout(() => this.pullHistoryFromWatch(), 2000);
+          // 5.06-v8 埋点: 重连成功
+          dataStorage.reportBleEvent('reconnect_success', {
+            success: true,
+            durationMs: Date.now() - startedAt,
+            notifyEnabled: notifyResult.enabled,
+            notifyTotal: notifyResult.total,
+            errorMsg: `attempt=${attempt}`,
+          });
           return;
         }
         // 失败 → 指数退避 1s/2s/4s 三次
@@ -267,6 +280,12 @@ class BleHub {
           console.warn('[BleHub] 3 次重连全失败, 放弃, 等下次触发');
           this.reconnectAttempt = 0;
           this.reconnectInProgress = false;
+          // 5.06-v8 埋点: 重连最终失败 (3 次都没连上)
+          dataStorage.reportBleEvent('reconnect_failed', {
+            success: false,
+            durationMs: Date.now() - startedAt,
+            errorMsg: 'all-3-attempts-failed',
+          });
           wx.showToast({
             title: '蓝牙重连失败, 请到设备扫描页手动重连',
             icon: 'none',

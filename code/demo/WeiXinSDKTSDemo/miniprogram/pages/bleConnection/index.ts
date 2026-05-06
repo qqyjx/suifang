@@ -360,6 +360,7 @@ Page({
   connectBleInternal(item: any) {
     let self = this;
     const wasStale = item && item._stale === true
+    const startedAt = Date.now()  // 5.06-v8 埋点: 连接耗时基准
     wx.showLoading({ title: '连接中', mask: true })
     self.StopSearchBleManager()
 
@@ -372,6 +373,12 @@ Page({
       if (settled) return;
       settled = true;
       wx.hideLoading();
+      // 5.06-v8 埋点: 12s 握手超时
+      dataStorage.reportBleEvent('connect_timeout', {
+        success: false,
+        durationMs: Date.now() - startedAt,
+        errorMsg: wasStale ? 'stale-bleInfo' : 'sdk-connect-no-callback',
+      });
       // v8: stale 项失败 -> 自动剔除 + 清 bleInfo, 防止用户反复点同一失效项
       if (wasStale) {
         self.bleArr = self.bleArr.filter((d: any) => d.deviceId !== item.deviceId)
@@ -469,6 +476,19 @@ Page({
           if (!handshakeOk) {
             const diag: any = wx.getStorageSync('bleConnDiag') || {};
             console.warn('[bleConnection] 握手未完成, 诊断:', diag);
+            // 5.06-v8 埋点: 握手失败 (5s 后 VPDevice 仍空)
+            dataStorage.reportBleEvent('handshake_failed', {
+              success: false,
+              durationMs: Date.now() - startedAt,
+              notifyEnabled: diag.notifyEnabled,
+              notifyTotal: diag.notifyTotal,
+              passwordCalls: diag.passwordCheckCalls,
+              errorMsg: diag.notifyTotal === 0 ? 'no-notify-chars'
+                : diag.notifyEnabled === 0 ? 'notify-all-failed'
+                : diag.notifyEnabled < diag.notifyTotal ? 'notify-partial-fail'
+                : !diag.passwordCheckCalls ? 'pwd-check-not-called'
+                : 'no-type1-response',
+            });
             // 根因分流: 按 notify 启用情况 + 密钥核准实际调用次数判断
             let title = '握手未完成';
             let content = '';
@@ -500,6 +520,14 @@ Page({
             });
             return;
           }
+          // 5.06-v8 埋点: 连接成功 (VPDevice 有值, 握手完成)
+          dataStorage.reportBleEvent('connect_success', {
+            success: true,
+            durationMs: Date.now() - startedAt,
+            notifyEnabled: notifyResult.enabled,
+            notifyTotal: notifyResult.total,
+            passwordCalls: (wx.getStorageSync('bleConnDiag') || {}).passwordCheckCalls,
+          });
           wx.redirectTo({ url: '/pages/index/index' });
         }, 5000);
       });

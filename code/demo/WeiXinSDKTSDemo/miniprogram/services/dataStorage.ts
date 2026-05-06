@@ -728,6 +728,50 @@ class DataStorageService {
   }
 
   /**
+   * 5.06-v8: 蓝牙连接质量埋点. fire-and-forget POST, 失败静默忽略不影响主流程.
+   *
+   * 调用点位:
+   *   - bleConnection.connectBleInternal 5s 后判定握手成功/失败 (event_type=connect_success/handshake_failed)
+   *   - bleConnection.connectBleInternal 12s 超时 (event_type=connect_timeout)
+   *   - BleHub.tryReconnectOnce 重连成功/三次失败 (event_type=reconnect_success/reconnect_failed)
+   *   - BleHub 心跳 90s 暗断 (event_type=heartbeat_timeout)
+   *   - BleHub adapter 关 / 开 (event_type=adapter_off/adapter_on)
+   *
+   * 数据落到服务端 ble_event 表, 后续 GET /api/ble-event/stats?days=7 看聚合.
+   */
+  reportBleEvent(eventType: string, extra?: any): void {
+    try {
+      const bleInfo: any = wx.getStorageSync('bleInfo') || {};
+      const wxOpenid: string = (wx.getStorageSync('wxOpenid') as string) || '';
+      const platform = (() => {
+        try {
+          const info: any = (wx.getDeviceInfo ? wx.getDeviceInfo() : wx.getSystemInfoSync()) || {};
+          return info.platform || '';
+        } catch { return ''; }
+      })();
+      const payload = {
+        eventType,
+        wxOpenid,
+        deviceId: this.deviceIdCache,
+        mac: bleInfo.mac || '',
+        platform,
+        buildTag: WSL_SERVER_URL ? ENV.BUILD_TAG : '', // 防 ENV 未导入时崩
+        ts: this.getTimestamp(),
+        ...(extra || {}),
+      };
+      wx.request({
+        url: `${WSL_SERVER_URL}/api/ble-event`,
+        method: 'POST',
+        data: payload,
+        // fire-and-forget: 不影响主流程, 失败也不重试
+        fail: () => { /* silent */ },
+      });
+    } catch (err) {
+      // 任何异常都不应阻塞蓝牙主流程
+    }
+  }
+
+  /**
    * 设置是否启用HTTP同步
    */
   setHttpEnabled(enabled: boolean): void {

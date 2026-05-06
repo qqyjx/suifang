@@ -85,6 +85,128 @@ def test_db():
     except Exception as e:
         return False, str(e)
 
+def ensure_ble_event_table():
+    """5.06-v8: 创建 ble_event 表 (idempotent), 收客户端蓝牙连接质量埋点.
+
+    用途:
+        - 聚合 connect_success / connect_failed / handshake_failed 等事件
+        - 反向定位线上失败热点 (notify 失败率 / 哪个微信 openid 高失败)
+        - 长期数据驱动后续优化 (而不是盲改)
+
+    字段 (字段名贴近 health_server 风格):
+        id              主键
+        wx_openid       关联用户 (可空, 客户端 wxOpenid 未就绪时)
+        device_id       关联设备 (可空, 连接尚未 register 时)
+        mac             手表 MAC (可空)
+        event_type      事件类型: connect_success / connect_failed / handshake_failed /
+                        reconnect_success / reconnect_failed / heartbeat_timeout /
+                        adapter_off / adapter_on / connection_lost
+        success         布尔, 1/0
+        duration_ms     连接耗时 (从用户点击到事件结束)
+        notify_enabled  forceEnableNotify 实际 enable 数
+        notify_total    forceEnableNotify 总数
+        password_calls  密钥核准实际成功调用次数
+        error_msg       失败时具体原因 (可空)
+        platform        ios / android
+        build_tag       客户端 ENV.BUILD_TAG (5.06-v8)
+        created_at      服务端写入时刻
+    """
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS ble_event (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                wx_openid VARCHAR(64) DEFAULT NULL,
+                device_id INT DEFAULT NULL,
+                mac VARCHAR(32) DEFAULT NULL,
+                event_type VARCHAR(32) NOT NULL,
+                success TINYINT(1) DEFAULT 0,
+                duration_ms INT DEFAULT NULL,
+                notify_enabled INT DEFAULT NULL,
+                notify_total INT DEFAULT NULL,
+                password_calls INT DEFAULT NULL,
+                error_msg VARCHAR(255) DEFAULT NULL,
+                platform VARCHAR(16) DEFAULT NULL,
+                build_tag VARCHAR(32) DEFAULT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_openid_time (wx_openid, created_at),
+                INDEX idx_event_time (event_type, created_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """)
+        print('[启动] ble_event 表已就绪')
+        cur.close()
+    except Exception as e:
+        print('[启动] ensure_ble_event_table 失败:', e)
+    finally:
+        conn.close()
+
+def insert_ble_event(payload):
+    """写入一条蓝牙连接质量埋点. 字段全可空, 仅 event_type 必填."""
+    event_type = payload.get('eventType')
+    if not event_type:
+        return None, '缺少 eventType'
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO ble_event
+              (wx_openid, device_id, mac, event_type, success, duration_ms,
+               notify_enabled, notify_total, password_calls, error_msg, platform, build_tag)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        """, (
+            payload.get('wxOpenid') or None,
+            payload.get('deviceId'),
+            payload.get('mac') or None,
+            event_type,
+            1 if payload.get('success') else 0,
+            payload.get('durationMs'),
+            payload.get('notifyEnabled'),
+            payload.get('notifyTotal'),
+            payload.get('passwordCalls'),
+            (payload.get('errorMsg') or None) and str(payload.get('errorMsg'))[:255],
+            payload.get('platform') or None,
+            payload.get('buildTag') or None,
+        ))
+        cur.close()
+        return {'eventId': cur.lastrowid}, None
+    except Exception as e:
+        return None, 'insert_ble_event 失败: {}'.format(e)
+    finally:
+        conn.close()
+
+def query_ble_event_stats(days=7):
+    """5.06-v8: 聚合最近 N 天的事件类型计数 + 成功率.
+    返回: { totalEvents, byType: [{eventType, count, successCount, successRate}] }
+    """
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT event_type, COUNT(*) AS total, SUM(success) AS succ
+            FROM ble_event
+            WHERE created_at >= DATE_SUB(NOW(), INTERVAL %s DAY)
+            GROUP BY event_type
+            ORDER BY total DESC
+        """, (days,))
+        by_type = []
+        total_all = 0
+        for row in cur.fetchall():
+            evt, total, succ = row[0], row[1] or 0, int(row[2] or 0)
+            total_all += total
+            by_type.append({
+                'eventType': evt,
+                'count': total,
+                'successCount': succ,
+                'successRate': round(succ / total, 4) if total > 0 else 0,
+            })
+        cur.close()
+        return {'days': days, 'totalEvents': total_all, 'byType': by_type}, None
+    except Exception as e:
+        return None, str(e)
+    finally:
+        conn.close()
+
 def ensure_openid_column():
     """5.06-v7: 确保 wearable_device_data 表有 wx_openid 列 (idempotent).
 
@@ -605,6 +727,18 @@ class HealthDataHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._send_json(500, {'error': str(e)})
 
+        elif pathname == '/api/ble-event/stats':
+            try:
+                days_str = (query.get('days') or ['7'])[0]
+                days = max(1, min(90, int(days_str)))
+            except (ValueError, TypeError):
+                days = 7
+            result, err = query_ble_event_stats(days)
+            if err:
+                self._send_json(500, {'error': err})
+            else:
+                self._send_json(200, result)
+
         elif pathname == '/api/device/by-sign':
             sign = (query.get('sign') or [None])[0]
             try:
@@ -628,6 +762,8 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                     'POST /api/device/register': '按 mac (优先) 或 device_sign UPSERT 到 wearable_device 并返回 deviceId',
                     'POST /api/device/merge': '合并 wearable_device_data 两行: {fromDeviceId, toDeviceId}',
                     'POST /api/wx/login': '微信小程序 code -> openid (走 jscode2session, 需 WX_APPSECRET)',
+                    'POST /api/ble-event': '客户端蓝牙连接质量埋点 (5.06-v8)',
+                    'GET  /api/ble-event/stats': '最近 N 天连接质量聚合 (?days=7)',
                     'GET  /api/device/by-sign?sign=...': '按 sign 查 wearable_device（不创建）',
                     'DELETE /api/device/:id': '删 wearable_device 一行 + 联动删该 deviceId 的所有数据',
                 },
@@ -695,6 +831,13 @@ class HealthDataHandler(BaseHTTPRequestHandler):
                         'unionid': result.get('unionid', ''),
                     })
 
+            elif pathname == '/api/ble-event':
+                result, err = insert_ble_event(body)
+                if err:
+                    self._send_json(400, {'error': err})
+                else:
+                    self._send_json(200, {'success': True, **result})
+
             elif pathname == '/api/device/register':
                 device_sign = body.get('deviceSign')
                 device_type = body.get('type', 1)
@@ -758,6 +901,8 @@ if __name__ == '__main__':
         ensure_mac_column()
         # 5.06-v7: 启动时确保 wx_openid 列存在 (idempotent), 多患者按 (deviceId, openid) 切片
         ensure_openid_column()
+        # 5.06-v8: 启动时确保 ble_event 表存在 (idempotent), 收蓝牙连接质量埋点
+        ensure_ble_event_table()
     else:
         print('[警告] MySQL 连接失败 → {}: {}'.format(DB_CONFIG['host'], info))
 
