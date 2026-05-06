@@ -7,4 +7,14 @@
     </view>
     <view class="deviceMac" style="font-size: 12px;">MAC：{{item.mac}}</view>
   </view>
+  <!-- 5.06-v8: 重新搜索按钮 (扫描中禁用), 不用退出页面再进 -->
+  <view class="rescan-btn-wrapper" style="padding: 32rpx 24rpx; display:flex; justify-content:center;">
+    <button
+      class="rescan-btn"
+      catch:tap="onRescanTap"
+      disabled="{{scanning}}"
+      style="width: 80%; background:#3b6cff; color:#fff; border-radius: 16rpx;">
+      {{scanning ? '搜索中… 第 ' + scanRound + ' 轮' : '重新搜索'}}
+    </button>
+  </view>
 </view>
