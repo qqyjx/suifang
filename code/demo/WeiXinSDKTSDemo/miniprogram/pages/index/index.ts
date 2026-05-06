@@ -643,6 +643,10 @@ Component({
     },
     // 监听蓝牙返回数据解析
     bleDataParses(value: any) {
+      // 防御性: SDK 偶尔会传 undefined 给 listeners (BleHub 入口已过滤大部分,
+      // 但 page 自己的 cb 可能还有别的入口收到), 不加 guard 会让 value.type 抛
+      // TypeError: undefined is not an object (evaluating 'e.type'), 污染 vConsole.
+      if (!value || typeof value !== 'object' || typeof value.type === 'undefined') return;
       let self = this;
       let device: any = this.data.device;
       console.log("蓝牙监听返回= 这个是index页面 >", value)

@@ -138,7 +138,32 @@ Page({
     let arr: any = []
     self.scanSeenCount = 0
     self.scanMatchedCount = 0
-    self.setData({ statusText: '正在搜索附近的设备…', bleList: [] })
+
+    // ===== 关键: 把上次连接的设备 (bleInfo) 加到列表第一项 =====
+    //
+    // iOS 平台限制: 已与系统配对的 BLE 设备不会广播 advertisement, 扫描永远搜不到.
+    // closeBLEConnection / closeBluetoothAdapter 都不能解除 iOS 系统层的 pair.
+    // 唯一能用的路径: 用 bleInfo.deviceId 直接 wx.createBLEConnection 重连.
+    //
+    // 把 bleInfo 当成列表第一项 "上次连接 (S101)" 渲染, 用户点击就走 connectBle
+    // 完整流程 (close-then-connect + 密钥核准 + forceEnableNotify), 绕过扫描限制.
+    // 同时仍然启动扫描, 万一用户要换新设备也能搜到.
+    const stale: any = wx.getStorageSync('bleInfo');
+    if (stale && stale.deviceId && stale.name) {
+      arr.push({
+        ...stale,
+        name: stale.name + ' (上次连接)',
+        RSSI: typeof stale.RSSI === 'number' ? stale.RSSI : 0,
+        mac: stale.mac || '',
+      });
+      self.setData({
+        bleList: arr.slice(),
+        statusText: '上次设备 ' + stale.name + ' 已显示, 点击直接重连; 或等扫描其他设备…',
+      });
+    } else {
+      self.setData({ statusText: '正在搜索附近的设备…', bleList: [] });
+    }
+
     // 获取手机设置状态
     veepooBle.veepooWeiXinSDKStartScanDeviceAndReceiveScanningDevice(function (res: any) {
       const device = res && res[0]
