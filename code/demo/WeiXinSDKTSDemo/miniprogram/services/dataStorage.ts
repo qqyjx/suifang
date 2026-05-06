@@ -222,6 +222,11 @@ class DataStorageService {
     };
     // 先入队 (立即写 storage, 防 POST 没回时小程序被挂起丢数据)
     this.enqueuePending(payload);
+    // mac 还没就绪 -> 不上传, 等 BleHub.handleAutoSync 收到 type=1 触发 flushPending.
+    if (deviceId < 0) {
+      console.log(`[DataStorage] mac 未就绪, ${type} 暂留 pending 等 type=1 回包后自动重传`);
+      return;
+    }
     // 立即试一次 POST. 成功 -> 从队列移除; 失败 -> 留队列等 batch flush 重试.
     try {
       await this.postOnce(payload);
@@ -364,43 +369,53 @@ class DataStorageService {
   }
 
   /**
-   * 根据已连接 BLE 设备生成稳定 device_sign, 调用服务端 register, 取回真正的 deviceId 并缓存.
+   * 根据已连接 BLE 设备解析稳定 deviceId. 唯一可信身份: bleInfo.mac (来自 Veepoo
+   * SDK 蓝牙密码核准回调 type=1 里的 VPDeviceMAC, BleHub 写入 storage).
    *
-   * sign 优先级 (越靠前越稳定, 跨平台/跨重装一致):
-   *   1. bleInfo.mac    — Veepoo SDK 蓝牙密码核准回调 (type=1) 里的 VPDeviceMAC, 由 BleHub 写入
-   *   2. bleInfo.deviceId — wx.getBluetoothDevices() 给的 id (Android=MAC, iOS=系统代理 UUID)
+   * !!! 关键设计: mac 没就绪时绝不 register !!!
+   *   过去版本会 fallback 用 iOS 代理 UUID 当 stableId 拼 sign, iOS 上 UUID 每次
+   *   重装/重连都可能变, 导致 wearable_device 表里同一张手表有多行 (deviceId 漂移).
+   *   5.06-v5 实测: 用户测试时数据进了 deviceId=5 而不是预期的 deviceId=4,
+   *   就是因为 mac 还没回包前 enqueueForBatch 调了 resolveDeviceId, fallback 到 UUID.
    *
-   * 不能只用 deviceId 当 sign: iOS 的代理 UUID 每次重装小程序甚至每次重连都可能变,
-   * 会让 wearable_device 表行数膨胀, 同一手表在表里有多行.
+   * 新策略:
+   *   - mac 就绪 -> 正常 register, 拿到稳定 deviceId 缓存
+   *   - mac 未到 -> 返回 -1, 调用方 (enqueueForBatch) 把数据入 pending 不上传
+   *   - BleHub.handleAutoSync 收到 type=1 写 mac 后调 dataStorage.flushPending,
+   *     pending 队列里 deviceId=-1 的项重新 resolve + 上传
    *
-   * BLE 未连或 register 失败时回退 4 (已知保留位).
+   * 服务端 /api/device/register 同时收 deviceSign + mac, 优先按 mac 匹配
+   * (即便 sign 不一致, 同 mac 永远映射到同一 deviceId, 满足 "一表一行" 的医院多设备需求).
    */
   private async resolveDeviceId(): Promise<number> {
-    if (this.deviceIdCache !== null) return this.deviceIdCache;
+    if (this.deviceIdCache !== null && this.deviceIdCache > 0) return this.deviceIdCache;
     const bleInfo: any = wx.getStorageSync('bleInfo');
-    if (!bleInfo) return 4;
-    const stableId = bleInfo.mac || bleInfo.deviceId;
-    if (!stableId) return 4;
-    const sign = `${bleInfo.name || 'unknown'}_${stableId}`;
+    if (!bleInfo || !bleInfo.mac) {
+      // mac 未就绪 -> 不 register, 让数据先入队. type=1 回包后 BleHub 会触发 flush.
+      return -1;
+    }
+    // 剥 "(上次连接)" 等 UI 后缀, 防 sign 污染漂移
+    const baseName = String(bleInfo.name || 'unknown').replace(/(\s*\(上次连接\))+$/g, '');
+    const sign = `${baseName}_${bleInfo.mac}`;
     return new Promise((resolve) => {
       wx.request({
         url: `${WSL_SERVER_URL}/api/device/register`,
         method: 'POST',
-        data: { deviceSign: sign, type: 1 },
+        data: { deviceSign: sign, mac: bleInfo.mac, type: 1 },
         success: (res: any) => {
           const id = res?.data?.deviceId;
-          if (typeof id === 'number') {
+          if (typeof id === 'number' && id > 0) {
             this.deviceIdCache = id;
-            console.log(`[DataStorage] 设备解析成功: deviceId=${id} (${sign})`);
+            console.log(`[DataStorage] 设备解析成功: deviceId=${id} (sign=${sign}, mac=${bleInfo.mac}, action=${res.data.action})`);
             resolve(id);
           } else {
-            console.warn('[DataStorage] register 返回无 deviceId，回退 4', res?.data);
-            resolve(4);
+            console.warn('[DataStorage] register 返回无效 deviceId, 等下次重试:', res?.data);
+            resolve(-1);
           }
         },
         fail: (err: any) => {
-          console.warn('[DataStorage] register 调用失败，回退 4:', err?.errMsg);
-          resolve(4);
+          console.warn('[DataStorage] register 调用失败, 等下次重试:', err?.errMsg);
+          resolve(-1);
         }
       });
     });
@@ -432,7 +447,12 @@ class DataStorageService {
   }
 
   /**
-   * 把 pending 队列里所有未传成功的数据再发一遍，由 app.ts onAppShow / 网络恢复回调触发
+   * 把 pending 队列里所有未传成功的数据再发一遍, 由以下场景触发:
+   *   - app.ts onAppShow / 网络恢复回调
+   *   - BleHub.handleAutoSync 收到 type=1 写 mac 后 (重要: 这是 deviceId=-1 队列项的唯一出路)
+   *
+   * 5.06-v6 关键: 入队时 mac 未就绪的项 deviceId=-1, 服务端不接受这种值; flush 时必须
+   * 重新调 resolveDeviceId 拿真 deviceId 再 POST. 重 resolve 仍失败 (mac 还没到) 就留队列.
    */
   public async flushPending(): Promise<{ ok: number; fail: number }> {
     const queue: any[] = wx.getStorageSync(DataStorageService.PENDING_KEY) || [];
@@ -441,6 +461,15 @@ class DataStorageService {
     let ok = 0;
     for (const item of queue) {
       const { _enqueuedAt, ...payload } = item;
+      // deviceId=-1 (入队时 mac 没就绪) -> 重新 resolve. resolve 仍 -1 -> 留队列等下次.
+      if (typeof payload.deviceId !== 'number' || payload.deviceId < 0) {
+        const did = await this.resolveDeviceId();
+        if (did < 0) {
+          remaining.push(item);
+          continue;
+        }
+        payload.deviceId = did;
+      }
       try {
         await this.postOnce(payload);
         ok++;

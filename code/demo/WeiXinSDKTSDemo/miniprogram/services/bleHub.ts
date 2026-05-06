@@ -248,6 +248,14 @@ class BleHub {
           dataStorage.resetDeviceIdCache();
           console.log(`[BleHub] 捕获手表 MAC=${mac}, 已写入 bleInfo.mac`);
         }
+        // 5.06-v6: mac 已就绪 -> 立即触发 flushPending, 把 type=1 之前堆积的 deviceId=-1
+        // 队列项重传. flushPending 内部会重新调 resolveDeviceId 拿真 deviceId.
+        // 队列空则 no-op. 这是 deviceId=-1 队列项的唯一出路.
+        void dataStorage.flushPending().then((r: any) => {
+          if (r.ok > 0 || r.fail > 0) {
+            console.log(`[BleHub] type=1 触发 flushPending: ok=${r.ok} fail=${r.fail}`);
+          }
+        });
       }
       // 同步把 type=1 全字段写入 VPDevice storage, 让首页 onShow 直接读取兜底
       // (避免首页 listener 注册晚于 type=1 回包导致 MAC/版本永空).
