@@ -372,11 +372,16 @@ Component({
       })
       this.getConnectedBleDevice();
 
-      wx.onBLEConnectionStateChange(function (res) {
-        // 该方法回调中可以用于处理连接意外断开等异常情况
-        console.log("res==>", res)
-        console.log(`device ${res.deviceId} state has changed, connected: ${res.connected}`)
-        wx.setStorageSync('VPDevice', null)
+      wx.onBLEConnectionStateChange((res: any) => {
+        // 该方法回调中可以用于处理连接意外断开等异常情况.
+        // 注意: iOS 系统设置里 "断开" 不一定触发本回调 (那是 iOS 系统层断, 小程序的 BLE session
+        //       仍然活着). 真正会触发的是: 表关机/电池没电、出蓝牙范围、wx.closeBLEConnection.
+        console.log(`[index] BLE state -> device=${res.deviceId} connected=${res.connected}`)
+        if (!res.connected) {
+          // 真断了: 清 storage 快照 + UI 字段, 防止 "断了但页面还显示数据" 的错觉.
+          wx.setStorageSync('VPDevice', null)
+          self.setData({ device: {}, connected: false, info: {} })
+        }
       })
       const items = Array.from({
         length: 40
@@ -475,37 +480,54 @@ Component({
 
       wx.showToast({ title: '已断开，可重新搜索', icon: 'none', duration: 1500 });
     },
-    // 获取已连接的蓝牙设备
+    // 获取已连接的蓝牙设备 + 校正 BLE 真实状态
+    //
+    // 两个易踩的坑:
+    //   1) iOS 系统蓝牙的 "断开" 不会触发 wx.onBLEConnectionStateChange,
+    //      也不会让 wx 这边的 BLE session 失效 (小程序 BLE 通道独立).
+    //   2) storage 的 VPDevice 是上一次连接时 BleHub 写入的快照, 即使
+    //      BLE 真断了也会留着 -> 直接信任快照会让 UI 显示假数据.
+    //
+    // 解法: 进首页时主动探测 BLE 真实状态 (wx.getBLEDeviceServices),
+    //   - 真连着  -> 显示快照 + 走 forceEnableNotify + 密钥核准
+    //   - 真断了  -> 清 storage VPDevice + 清 UI 字段, 让用户明确看到 "未连接"
+    //   - 用户主动断开 (userDisconnected flag) -> 同上, 立即清
     getConnectedBleDevice() {
       let self = this;
-      // 进入首页时优先从 storage 兜底拿 VPDevice 快照 (BleHub 写入), 让 UI 立刻有数据.
-      const snap: any = wx.getStorageSync('VPDevice');
-      if (snap) {
-        self.setData({ device: snap, connected: true });
+      const bleInfo: any = wx.getStorageSync('bleInfo');
+      const userDisconnected = wx.getStorageSync('userDisconnected');
+
+      // 主动断开过 / 没 bleInfo: 立即清, 不显示老快照
+      if (userDisconnected || !bleInfo || !bleInfo.deviceId) {
+        wx.removeStorageSync('VPDevice');
+        self.setData({ device: {}, connected: false, info: {} });
+        return;
       }
-      wx.getConnectedBluetoothDevices({
-        services: ['FFFF', 'FEE7', '0001', '180D'],
-        success(res) {
-          let device: any = self.data.device || {}
-          console.log("已连接的蓝牙设备res=>", res)
-          res.devices.forEach(item => {
-            const bleInfo: any = wx.getStorageSync('bleInfo');
-            if (bleInfo && bleInfo.deviceId == item.deviceId) {
-              self.setData({ info: item, connected: true })
-              device.name = item.name;
-              self.setData({ device })
-              self.notifyMonitorValueChange();
-              // 强制 enable notify 兜底, 修 SDK 短路场景 (无论从 bleConnection 进还是 app.onShow 进都走这一遭).
-              try { require('../../services/bleHub').bleHub.forceEnableNotify(item.deviceId); }
-              catch (err) { console.warn('[index] forceEnableNotify 触发失败', err); }
-              // 连接上后读取秘钥，电量等
-              setTimeout(() => {
-                self.BlePasswordCheckManager();
-              }, 800);
-            }
-          })
+
+      // 有 bleInfo + 没用户主动断开. 先用 storage 快照让 UI 立刻有数据,
+      // 再异步探测 BLE 真实状态校正 (探测失败 -> 清; 成功 -> 走原流程).
+      const snap: any = wx.getStorageSync('VPDevice');
+      if (snap) self.setData({ device: snap, connected: true });
+
+      wx.getBLEDeviceServices({
+        deviceId: bleInfo.deviceId,
+        success(_res: any) {
+          // BLE 通道真连着, 走原流程
+          console.log('[index] BLE 真实状态: 已连接, 走 forceEnableNotify + 密钥核准');
+          self.setData({ info: { deviceId: bleInfo.deviceId, name: (snap && snap.name) || bleInfo.name }, connected: true });
+          self.notifyMonitorValueChange();
+          try { require('../../services/bleHub').bleHub.forceEnableNotify(bleInfo.deviceId); }
+          catch (err) { console.warn('[index] forceEnableNotify 触发失败', err); }
+          setTimeout(() => self.BlePasswordCheckManager(), 800);
+        },
+        fail(err: any) {
+          // BLE 实际断了 (典型 errCode 10006 = no connection / device disconnect).
+          // 这是 iOS 系统设置里 "断开" 后唯一靠谱的判定路径.
+          console.log('[index] BLE 真实状态: 未连接, 清空 UI', err && err.errMsg);
+          wx.removeStorageSync('VPDevice');
+          self.setData({ device: {}, connected: false, info: {} });
         }
-      })
+      });
     },
     skipDeviceGet() {
       console.log("a")
