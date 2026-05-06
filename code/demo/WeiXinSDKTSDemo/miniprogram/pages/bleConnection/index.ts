@@ -40,11 +40,56 @@ Page({
     } catch (e) {
       console.warn('[bleConnection] getDeviceInfo failed, fallback skipped:', e)
     }
-    // 体验版下挂原生 onBluetoothDeviceFound 旁路监听，与 SDK 回调对照诊断
-    if (ENV.IS_TEST_BUILD) this.attachRawBleDiagnostics()
-    this.veepooSDKGetSetting()
-    // 挂载断线监听（连接成功后，掉线时自动重连 + 清 deviceId 缓存）
-    this.BLEConnectionStateChange()
+
+    // 修 "断开后再连搜不到 S101" 的关键: 完整重置 BLE 通道.
+    //
+    // 用户路径:
+    //   首页连上 -> 看到 4 字段 -> 点 "断开连接" 或 iOS 系统断开
+    //   -> 进 "设备扫描" 页 -> 一直 "正在搜索..." 搜不到 S101
+    //
+    // 根因: closeBLEConnection 只切了 wx 应用层 BLE session, iOS CoreBluetooth
+    // 系统层的 paired 状态可能仍持有, 表停在 paired-disconnected 不广播.
+    // 必须 closeBluetoothAdapter (整个 BLE 适配器关) + openBluetoothAdapter
+    // (重新打开) 让 wx 端忘记旧连接, iOS 释放 pair, 表重新进入 advertising.
+    const startScan = () => {
+      if (ENV.IS_TEST_BUILD) self.attachRawBleDiagnostics();
+      self.veepooSDKGetSetting();
+      self.BLEConnectionStateChange();
+    };
+
+    const stale: any = wx.getStorageSync('bleInfo');
+    const closeOldConnFirst = (cb: () => void) => {
+      if (stale && stale.deviceId) {
+        wx.closeBLEConnection({
+          deviceId: stale.deviceId,
+          complete: (r: any) => {
+            console.log('[bleConnection] 进扫描页前 close 旧 BLE', r && r.errMsg);
+            cb();
+          },
+        });
+      } else {
+        cb();
+      }
+    };
+
+    closeOldConnFirst(() => {
+      // 重置 BLE adapter (close 整个适配器再 open).
+      // 这一步是修扫不到的杀手锏: iOS 上仅 closeBLEConnection 不够, 系统层的
+      // paired 状态会让表停在 paired-disconnected. closeBluetoothAdapter
+      // 等于跟 iOS 说 "我不要这个 BLE session 了", 触发系统释放 pair.
+      wx.closeBluetoothAdapter({
+        complete: () => {
+          setTimeout(() => {
+            wx.openBluetoothAdapter({
+              complete: (r: any) => {
+                console.log('[bleConnection] BLE adapter 重置完成, 启动扫描', r && r.errMsg);
+                startScan();
+              },
+            });
+          }, 300);
+        },
+      });
+    });
   },
 
   // 体验版诊断：直接挂微信原生 onBluetoothDeviceFound + adapterState
