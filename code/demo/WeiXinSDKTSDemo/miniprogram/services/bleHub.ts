@@ -31,6 +31,15 @@ class BleHub {
   private initialized = false;
   private lastPullAt = 0;
 
+  // 5.06-v8 稳态保障: 全局连接状态 + 心跳 + 重连指数退避
+  private adapterAvailable = true;        // wx 蓝牙适配器是否可用 (用户没关蓝牙)
+  private bleConnected = false;           // 当前是否有 BLE 物理连接
+  private lastPacketAt = 0;               // 上次收到任何 type=N 回包的时刻 (心跳判断暗断)
+  private heartbeatTimer: any = null;     // 30s 心跳定时器
+  private reconnectAttempt = 0;           // 当前重连重试计数 (1/2/3)
+  private reconnectTimer: any = null;     // 退避 setTimeout 句柄, 同时也是 "重连进行中" 互斥锁
+  private reconnectInProgress = false;    // 同上, setTimeout 触发回调期间也算进行中
+
   init(): void {
     if (this.initialized) return;
     this.initialized = true;
@@ -79,7 +88,205 @@ class BleHub {
     this.listeners.push((e: any) => this.handleAutoSync(e));
     this.ecgListeners.push((e: any) => this.handleEcgChannel(e));
 
+    // 5.06-v8: 任何 type=N 都更新 lastPacketAt, 心跳 90s 静默 → 视为暗断触发重连
+    this.listeners.push((e: any) => {
+      if (e && typeof e.type !== 'undefined') {
+        this.lastPacketAt = Date.now();
+      }
+    });
+
+    // 5.06-v8: 全局适配器/连接状态监听 + 30s 心跳
+    this.installAdapterStateMonitor();
+    this.installConnectionStateMonitor();
+    this.startHeartbeat();
+
     console.log('[BleHub] 全局事件中心已初始化 (monitor+ecg 两通道, 单 wx listener via 全局 fan-out)');
+  }
+
+  /**
+   * 5.06-v8 稳态 #8: 全局监听蓝牙适配器开关.
+   * 用户在系统设置/控制中心切了飞行模式 / 关蓝牙 → BLE 通道断, 但 SDK 本身不主动告知;
+   * 旧版本只在扫描页 (体验版) 注册了这个事件, 首页用户根本看不到提示.
+   * 现在全局注册, 关蓝牙 toast 提示, 重开蓝牙自动触发重连.
+   */
+  private installAdapterStateMonitor(): void {
+    try {
+      wx.onBluetoothAdapterStateChange((res: any) => {
+        const wasAvailable = this.adapterAvailable;
+        this.adapterAvailable = !!(res && res.available);
+        console.log('[BleHub] adapter state', res);
+        if (wasAvailable && !this.adapterAvailable) {
+          // 蓝牙刚被关 / 飞行模式
+          wx.showToast({ title: '蓝牙已关闭, 数据无法同步', icon: 'none', duration: 3000 });
+          this.bleConnected = false;
+          dataStorage.resetDeviceIdCache();
+        } else if (!wasAvailable && this.adapterAvailable) {
+          // 蓝牙刚被重开 → 触发自动重连
+          wx.showToast({ title: '蓝牙已恢复, 正在重连…', icon: 'none', duration: 2000 });
+          this.requestReconnect('adapter-recovered');
+        }
+      });
+    } catch (e) {
+      console.warn('[BleHub] adapter state monitor 注册失败', e);
+    }
+  }
+
+  /**
+   * 5.06-v8 稳态 #9: 全局监听 BLE 连接状态变化, 主动断开除外都自动重连.
+   * connectionStateChange.connected=false 路径:
+   *   - 距离过远 / 走出范围 (常见, 但可能很快又能连上)
+   *   - 表换电池 / 重启
+   *   - 用户主动按 "断开连接" 按钮 (设了 storage.userDisconnected=true, 跳过)
+   *   - 系统挂起小程序后台过久, BLE session 被释放
+   */
+  private installConnectionStateMonitor(): void {
+    try {
+      veepooBle.veepooWeiXinSDKBLEConnectionStateChangeManager((e: any) => {
+        const wasConnected = this.bleConnected;
+        this.bleConnected = !!(e && e.connected);
+        console.log('[BleHub] connection state', e);
+        if (wasConnected && !this.bleConnected) {
+          dataStorage.resetDeviceIdCache();
+          if (!wx.getStorageSync('userDisconnected')) {
+            this.requestReconnect('connection-lost');
+          }
+        }
+      });
+    } catch (e) {
+      console.warn('[BleHub] connection state monitor 注册失败', e);
+    }
+  }
+
+  /**
+   * 5.06-v8 稳态 #10: 30s 心跳 (复用 SDK 电量请求, 顺便刷首页电量字段).
+   * BLE 通道暗断检测: 上次收到任何 type=N 回包超过 90s → 视为通道挂了, 触发重连.
+   * 暗断常见于: 距离过远 / 微信后台被系统挂起 / 信号被其他蓝牙干扰.
+   * connection state callback 不一定能感知到 (尤其 iOS), 心跳兜底.
+   */
+  private startHeartbeat(): void {
+    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+    this.heartbeatTimer = setInterval(() => {
+      if (!this.bleConnected || !this.adapterAvailable) return;
+      // 发电量请求当心跳, 表收到会回 type=2 (含 VPDeviceElectricPercent), 顺带刷首页
+      try {
+        veepooFeature.veepooReadElectricQuantityManager();
+      } catch (e) {
+        console.warn('[BleHub] heartbeat readElectric 抛错', e);
+      }
+      // 90s 内无任何 type=N 回包 → 通道暗断
+      if (this.lastPacketAt > 0 && Date.now() - this.lastPacketAt > 90000) {
+        console.warn('[BleHub] 心跳: 90s 无回包, 视为通道暗断, 触发重连');
+        this.bleConnected = false;
+        this.lastPacketAt = 0;
+        this.requestReconnect('heartbeat-timeout');
+      }
+    }, 30000);
+  }
+
+  /**
+   * 5.06-v8 稳态 #9: 重连入口 (集中式), 指数退避 1s/2s/4s 三次.
+   * 多个触发源都调这个: adapter recovered / connection-lost / heartbeat-timeout / app.onShow.
+   * 互斥锁保证同周期内不重复发起 (reconnectTimer + reconnectInProgress 双重保险).
+   * 三次都失败 → toast 提示用户手动到设备扫描页, 不无限重试浪费电.
+   */
+  /**
+   * 5.06-v8: 外部 (connectBleInternal 成功路径) 主动告知 "已连接".
+   * 防 SDK connection state callback 在 iOS already-connected 短路场景下不触发,
+   * 导致 BleHub.bleConnected 仍是 false → 心跳不发 → 暗断检测假阴.
+   */
+  notifyConnected(): void {
+    this.bleConnected = true;
+    this.lastPacketAt = Date.now();
+    this.reconnectAttempt = 0;
+    this.reconnectInProgress = false;
+    if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
+    console.log('[BleHub] notifyConnected: bleConnected=true');
+  }
+
+  requestReconnect(reason: string): void {
+    const bleInfo: any = wx.getStorageSync('bleInfo');
+    const userDisconnected = wx.getStorageSync('userDisconnected');
+    if (!bleInfo || !bleInfo.deviceId) {
+      console.log('[BleHub] requestReconnect skip: 无 bleInfo, reason=' + reason);
+      return;
+    }
+    if (userDisconnected) {
+      console.log('[BleHub] requestReconnect skip: 用户已主动断开');
+      return;
+    }
+    if (this.reconnectInProgress || this.reconnectTimer) {
+      console.log('[BleHub] requestReconnect skip: 已有重连进行中');
+      return;
+    }
+    if (!this.adapterAvailable) {
+      console.log('[BleHub] requestReconnect skip: 蓝牙适配器不可用');
+      return;
+    }
+    console.log(`[BleHub] requestReconnect 触发, reason=${reason}`);
+    this.reconnectAttempt = 0;
+    this.tryReconnectOnce(bleInfo);
+  }
+
+  private tryReconnectOnce(bleInfo: any): void {
+    this.reconnectAttempt++;
+    const attempt = this.reconnectAttempt;
+    this.reconnectInProgress = true;
+    console.log(`[BleHub] 重连尝试 #${attempt}`);
+    try {
+      veepooBle.veepooWeiXinSDKBleReconnectDeviceManager(bleInfo, async (res: any) => {
+        console.log(`[BleHub] 重连 #${attempt} =>`, res);
+        const ok = res && (res.connection === true || res.reconnect === true);
+        if (ok) {
+          this.reconnectAttempt = 0;
+          this.reconnectInProgress = false;
+          this.bleConnected = true;
+          this.lastPacketAt = Date.now();
+          // forceEnableNotify Promise.all 等齐 + 立即发密钥核准 + autoMonitoring + pullHistory
+          let notifyResult = { enabled: 0, failed: 0, total: 0 };
+          try {
+            notifyResult = await this.forceEnableNotify(bleInfo.deviceId);
+            console.log('[BleHub] reconnect forceEnableNotify 结果:', notifyResult);
+          } catch (err) {
+            console.warn('[BleHub] reconnect forceEnableNotify 抛错', err);
+          }
+          try { veepooFeature.veepooBlePasswordCheckManager(); }
+          catch (e) { console.warn('[BleHub] reconnect 密钥核准抛错', e); }
+          setTimeout(() => this.enableAutoMonitoring(), 1000);
+          setTimeout(() => this.pullHistoryFromWatch(), 2000);
+          return;
+        }
+        // 失败 → 指数退避 1s/2s/4s 三次
+        if (attempt < 3) {
+          const delay = Math.pow(2, attempt - 1) * 1000;
+          console.log(`[BleHub] 重连 #${attempt} 失败, ${delay}ms 后重试`);
+          this.reconnectTimer = setTimeout(() => {
+            this.reconnectTimer = null;
+            this.tryReconnectOnce(bleInfo);
+          }, delay);
+        } else {
+          console.warn('[BleHub] 3 次重连全失败, 放弃, 等下次触发');
+          this.reconnectAttempt = 0;
+          this.reconnectInProgress = false;
+          wx.showToast({
+            title: '蓝牙重连失败, 请到设备扫描页手动重连',
+            icon: 'none',
+            duration: 3000,
+          });
+        }
+      });
+    } catch (err) {
+      console.warn('[BleHub] reconnect 调用抛错', err);
+      this.reconnectInProgress = false;
+      if (attempt < 3) {
+        const delay = Math.pow(2, attempt - 1) * 1000;
+        this.reconnectTimer = setTimeout(() => {
+          this.reconnectTimer = null;
+          this.tryReconnectOnce(bleInfo);
+        }, delay);
+      } else {
+        this.reconnectAttempt = 0;
+      }
+    }
   }
 
   private dispatch(list: Listener[], e: any): void {

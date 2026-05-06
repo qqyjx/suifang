@@ -156,35 +156,12 @@ App<IAppOption>({
     });
   },
   onShow() {
-    // 回到前台先尝试自动重连蓝牙（小程序后台被微信挂起时连接会断）
-    // 区分 "用户主动按断开 vs 系统挂起断开":
-    //   - 主动断开 (closeBluetoothAdapterManager 设 userDisconnected=true): 不重连,
-    //     用户已表达 "现在不想用这块表" 的意图.
-    //   - 挂起断开 (没 flag): 自动重连, 没连好就重连.
-    const bleInfo: any = wx.getStorageSync('bleInfo');
-    const userDisconnected = wx.getStorageSync('userDisconnected');
-    if (bleInfo && bleInfo.deviceId && !userDisconnected) {
-      veepooBle.veepooWeiXinSDKBleReconnectDeviceManager(bleInfo, async (res: any) => {
-        console.log('[App.onShow] 自动重连=>', res);
-        if (res && (res.connection === true || res.reconnect === true)) {
-          // 5.06-v8: forceEnableNotify 改成 await (Promise.all 等齐), 避免密钥核准
-          // 在 notify 未 ready 时发出导致 type=1 永久丢失.
-          let notifyResult = { enabled: 0, failed: 0, total: 0 };
-          try {
-            notifyResult = await bleHub.forceEnableNotify(bleInfo.deviceId);
-            console.log('[App.onShow] forceEnableNotify 结果:', notifyResult);
-          } catch (err) {
-            console.warn('[App.onShow] forceEnableNotify 抛错', err);
-          }
-          // BLE 物理通道恢复后必须再走一次密钥核准, SDK 才会推送 type=1 (含 VPDeviceMAC/版本) 等回调.
-          // notify 已 ready, 立即发, 不再 setTimeout 800ms.
-          try { veepooFeature.veepooBlePasswordCheckManager(); }
-          catch (e) { console.warn('[App.onShow] 密钥核准失败', e); }
-          setTimeout(() => bleHub.enableAutoMonitoring(), 1000);
-          setTimeout(() => bleHub.pullHistoryFromWatch(), 2000);
-        }
-      });
-    }
+    // 5.06-v8: 自动重连逻辑全部下沉到 BleHub.requestReconnect (集中式, 指数退避 1/2/4s 三次).
+    // 小程序后台→前台时 BLE 大概率被系统挂起断了, 触发一次重连请求即可;
+    // BleHub 内部去重, 重复触发不会发起多次. userDisconnected / 适配器不可用等
+    // 跳过条件也都在 BleHub 内统一判断, 这里不重复.
+    bleHub.requestReconnect('app-onshow');
+
     // 顺便刷 pending 队列（有可能离线时积了几条）+ 重新拉起 batch scheduler
     // (小程序后台被挂起会冻结 setInterval/setTimeout, onShow 时必须重置).
     dataStorage.startBatchSync(); // 内部会立即 flush 一次 + 重置 2h/23:59 定时

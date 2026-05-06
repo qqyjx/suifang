@@ -66,10 +66,9 @@ Page({
     // 必须 closeBluetoothAdapter (整个 BLE 适配器关) + openBluetoothAdapter
     // (重新打开) 让 wx 端忘记旧连接, iOS 释放 pair, 表重新进入 advertising.
     const startScan = () => {
-      // 5.06-v8: attach diagnostics / 状态监听只做一次 (一次性 setup),
-      // 后续续扫 / 重新搜索都只调 startScanRound, 避免 listener 累积重复.
+      // 5.06-v8: attach diagnostics 只做一次 (一次性 setup), 后续续扫只调 startScanRound.
+      // BLEConnectionStateChange 已由 BleHub 全局接管, 这里不再注册避免覆盖.
       if (ENV.IS_TEST_BUILD) self.attachRawBleDiagnostics();
-      self.BLEConnectionStateChange();
       self.startScanRound();
     };
 
@@ -411,6 +410,8 @@ Page({
         // 旧版本是 setTimeout 300ms 就发核准, 但 notify enable 是异步, 1s 才完成时
         // 核准发出去 type=1 永久丢. 现在 await 等 notify 全部 enable 后再发核准.
         const { bleHub } = require('../../services/bleHub');
+        // 主动告知 BleHub "已连接" (防 iOS already-connected 短路 SDK connectionStateChange 不触发)
+        bleHub.notifyConnected();
         let notifyResult = { enabled: 0, failed: 0, total: 0 };
         try {
           notifyResult = await bleHub.forceEnableNotify(item.deviceId);
@@ -591,24 +592,9 @@ Page({
       self.bleDataParses(e)
     })
   },
-  // 蓝牙连接状态变化监听（断开时清缓存）
-  //
-  // 重要: 这里曾经会调 tryAutoReconnect 自动重连, 但**这是 bug**:
-  //   bleConnection 是 "用户来设备扫描页换设备" 的页面, 进 onLoad 会走完整 BLE
-  //   adapter 重置流程 (closeBLEConnection + closeBluetoothAdapter + open). 重置
-  //   过程中 BLE 状态变 disconnected -> 触发本回调 -> 自动重连把刚 reset 的 BLE
-  //   又连回去 -> 表进 "paired-connected 不广播" 状态 -> 扫描搜不到 S101.
-  //
-  // 在设备扫描页, 断开是预期行为 (用户主动操作), 不要自动重连. app.ts onShow 的
-  // 自动重连逻辑足够覆盖 "小程序后台 -> 前台" 场景, 不需要这里再重连一次.
-  BLEConnectionStateChange() {
-    veepooBle.veepooWeiXinSDKBLEConnectionStateChangeManager(function (e: any) {
-      console.log("蓝牙连接状态变化=>", e)
-      if (e && e.connected === false) {
-        dataStorage.resetDeviceIdCache()
-      }
-    })
-  },
+  // 5.06-v8: BleHub.installConnectionStateMonitor 已全局接管, 这个函数留作 no-op
+  // 兼容老调用 (避免删除引用导致老页面崩). 不再注册 SDK callback 避免覆盖 BleHub.
+  BLEConnectionStateChange() { /* no-op, 已迁移到 BleHub */ },
   // 停止蓝牙搜索
   StopSearchBleManager() {
     veepooBle.veepooWeiXinSDKStopSearchBleManager(function (e: any) {
