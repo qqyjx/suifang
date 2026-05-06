@@ -42,11 +42,13 @@ class BleHub {
     // BLECharacteristicValueChangeManager 仅注册 wx 全局监听 + 走解析器, 不依赖连接状态.
     // BLE notify 由 forceEnableNotify 在连接成功后兜底启用, 解耦.
     veepooBle.veepooWeiXinSDKBLECharacteristicValueChangeManager((e: any) => {
+      // SDK 解析失败时偶尔传 undefined, 过滤掉避免 listener 里访问 e.type 抛 TypeError.
+      if (!e || typeof e !== 'object' || typeof e.type === 'undefined') return;
       // 同一份 SDK 解析事件:
       //   - 普通体征/设置类 -> monitor listeners
       //   - type=51 心率 ECG 通道也要 (handleEcgChannel 兜底入库)
       this.dispatch(this.listeners, e);
-      if (e && e.type === 51) this.dispatch(this.ecgListeners, e);
+      if (e.type === 51) this.dispatch(this.ecgListeners, e);
     });
 
     // monkey-patch 让旧的页面调用都进 hub listener 队列 (避免页面再调 SDK 原生

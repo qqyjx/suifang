@@ -381,23 +381,22 @@ Page({
       self.bleDataParses(e)
     })
   },
-  // 蓝牙连接状态变化监听（断开时清缓存 + 触发自动重连）
+  // 蓝牙连接状态变化监听（断开时清缓存）
+  //
+  // 重要: 这里曾经会调 tryAutoReconnect 自动重连, 但**这是 bug**:
+  //   bleConnection 是 "用户来设备扫描页换设备" 的页面, 进 onLoad 会走完整 BLE
+  //   adapter 重置流程 (closeBLEConnection + closeBluetoothAdapter + open). 重置
+  //   过程中 BLE 状态变 disconnected -> 触发本回调 -> 自动重连把刚 reset 的 BLE
+  //   又连回去 -> 表进 "paired-connected 不广播" 状态 -> 扫描搜不到 S101.
+  //
+  // 在设备扫描页, 断开是预期行为 (用户主动操作), 不要自动重连. app.ts onShow 的
+  // 自动重连逻辑足够覆盖 "小程序后台 -> 前台" 场景, 不需要这里再重连一次.
   BLEConnectionStateChange() {
-    let self = this;
     veepooBle.veepooWeiXinSDKBLEConnectionStateChangeManager(function (e: any) {
       console.log("蓝牙连接状态变化=>", e)
       if (e && e.connected === false) {
         dataStorage.resetDeviceIdCache()
-        self.tryAutoReconnect()
       }
-    })
-  },
-  // 断线后自动重连（一次性尝试，失败则等用户手动操作）
-  tryAutoReconnect() {
-    const bleInfo: any = wx.getStorageSync('bleInfo')
-    if (!bleInfo || !bleInfo.deviceId) return
-    veepooBle.veepooWeiXinSDKBleReconnectDeviceManager(bleInfo, function (result: any) {
-      console.log('[AutoReconnect] result=>', result)
     })
   },
   // 停止蓝牙搜索
