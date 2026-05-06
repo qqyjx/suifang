@@ -197,9 +197,18 @@ class DataStorageService {
   }
 
   /**
-   * 把一条采集记录入 pending 队列, 等 batch 时机统一上传.
-   * 在入队时记录 recordedAt = 采集时刻; postOnce 上传时再加 uploadedAt.
-   * deviceId 在入队时解析 (resolveDeviceId 缓存稳定; BLE 断开时由 resetDeviceIdCache 清).
+   * 把一条采集记录处理: 立即尝试 POST + 失败入 pending 队列兜底.
+   *
+   * 5.06-v4 实测发现: 纯 batch 模式 (saveData 只入队, 等 2h flush) 实战不可靠
+   * — 前台运行时 batch 定时器不一定按预期触发 (微信小程序 setInterval 在 page
+   * 切换/jieli SDK 异常等场景下可能被打断), 数据卡在队列里就是不传.
+   *
+   * 改为双保险:
+   *   1. 立即 POST 一次 (POST 成功 -> 数据立即入库, 主路径)
+   *   2. 同时入 pending 队列 (POST 失败 -> 留队列, 2h batch / 23:59 / app.onShow 兜底)
+   *   3. POST 成功后从队列里移除 (避免重复上传)
+   *
+   * 仍然带 recordedAt (采集时刻) + 让 server 加 uploadedAt (上传时刻).
    */
   private async enqueueForBatch<T>(type: HealthDataType, data: T, date: string): Promise<void> {
     const deviceId = await this.resolveDeviceId();
@@ -211,7 +220,32 @@ class DataStorageService {
       deviceId,
       recordedAt: this.getTimestamp(),
     };
+    // 先入队 (立即写 storage, 防 POST 没回时小程序被挂起丢数据)
     this.enqueuePending(payload);
+    // 立即试一次 POST. 成功 -> 从队列移除; 失败 -> 留队列等 batch flush 重试.
+    try {
+      await this.postOnce(payload);
+      this.removeFromPending(payload);
+      console.log(`[DataStorage] 实时上传 ${type} 成功 (deviceId=${deviceId})`);
+    } catch (err) {
+      console.log(`[DataStorage] 实时上传 ${type} 失败, 留 pending 等 batch 重试:`, err);
+    }
+  }
+
+  /**
+   * POST 成功后从 pending 队列移除指定记录, 避免 batch 时重复上传.
+   * 用 dataType + recordedAt 联合匹配 (recordedAt ms 级时间戳, 同 type 同时刻冲突概率极低).
+   */
+  private removeFromPending(payload: any): void {
+    const queue: any[] = wx.getStorageSync(DataStorageService.PENDING_KEY) || [];
+    const idx = queue.findIndex(q =>
+      q.dataType === payload.dataType &&
+      q.recordedAt === payload.recordedAt
+    );
+    if (idx >= 0) {
+      queue.splice(idx, 1);
+      wx.setStorageSync(DataStorageService.PENDING_KEY, queue);
+    }
   }
 
   /**

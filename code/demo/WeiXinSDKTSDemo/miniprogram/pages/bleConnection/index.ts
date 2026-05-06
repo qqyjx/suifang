@@ -150,15 +150,17 @@ Page({
     // 同时仍然启动扫描, 万一用户要换新设备也能搜到.
     const stale: any = wx.getStorageSync('bleInfo');
     if (stale && stale.deviceId && stale.name) {
+      // 剥掉之前可能附加过的 (上次连接) 后缀, 避免 "S101 (上次连接) (上次连接) (上次连接)" 累加
+      const baseName = String(stale.name).replace(/(\s*\(上次连接\))+$/, '');
       arr.push({
         ...stale,
-        name: stale.name + ' (上次连接)',
+        name: baseName + ' (上次连接)',
         RSSI: typeof stale.RSSI === 'number' ? stale.RSSI : 0,
         mac: stale.mac || '',
       });
       self.setData({
         bleList: arr.slice(),
-        statusText: '上次设备 ' + stale.name + ' 已显示, 点击直接重连; 或等扫描其他设备…',
+        statusText: '上次设备 ' + baseName + ' 已显示, 点击直接重连; 或等扫描其他设备…',
       });
     } else {
       self.setData({ statusText: '正在搜索附近的设备…', bleList: [] });
