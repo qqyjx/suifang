@@ -1,5 +1,12 @@
 <view class="main-box">
   <view wx:if="{{isTestBuild}}" class="test-build-badge">测试版 {{buildTag}}</view>
+  <!-- 5.06-v8: 连接状态条. 连上=绿; 断开=红+重连按钮.
+       状态来源: data.connected (由 wx.onBLEConnectionStateChange + getConnectedBleDevice 维护) -->
+  <view class="conn-bar {{connected ? 'conn-bar-ok' : 'conn-bar-bad'}}">
+    <text wx:if="{{connected}}" class="conn-bar-text">● 已连接 · {{device.name || '手表'}}{{device.VPDeviceElectricPercent ? ' · 电量 ' + device.VPDeviceElectricPercent + '%' : ''}}</text>
+    <text wx:else class="conn-bar-text">● 未连接, BLE 通道断开</text>
+    <view wx:if="{{!connected}}" class="conn-bar-btn" catch:tap="onReconnectTap">重新连接</view>
+  </view>
   <view class="top-buttom">
     <view class="buttom" catch:tap="skipDeviceGet">设备扫描</view>
     <view class="buttom buttom-active {{ connected ? 'active' : '' }}" catch:tap="closeBluetoothAdapterManager">断开连接</view>

@@ -252,6 +252,29 @@ Component({
   },
   methods: {
 
+    /**
+     * 5.06-v8: 用户主动点击"重新连接"按钮 (首页状态条).
+     * 清掉 userDisconnected 标志 (允许重连), 然后调 BleHub.requestReconnect 走集中式重连.
+     * BleHub 内部指数退避 1s/2s/4s 三次, 互斥锁保证不重复发起.
+     */
+    onReconnectTap() {
+      const bleInfo: any = wx.getStorageSync('bleInfo');
+      if (!bleInfo || !bleInfo.deviceId) {
+        wx.showModal({
+          title: '没有可重连的设备',
+          content: '尚未绑定过手表, 请先到 "设备扫描" 页选一个设备连接.',
+          showCancel: false,
+        });
+        return;
+      }
+      wx.removeStorageSync('userDisconnected');
+      wx.showToast({ title: '正在重连…', icon: 'none', duration: 2000 });
+      try {
+        require('../../services/bleHub').bleHub.requestReconnect('user-tap-reconnect');
+      } catch (e) {
+        console.warn('[index] requestReconnect 抛错', e);
+      }
+    },
 
     packRgb(r: any, g: any, b: any) {
 
