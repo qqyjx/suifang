@@ -397,7 +397,7 @@ Page({
     }, HANDSHAKE_TIMEOUT_MS);
 
     const doSdkConnect = () => {
-      veepooBle.veepooWeiXinSDKBleConnectionServicesCharacteristicsNotifyManager(item, function (result: any) {
+      veepooBle.veepooWeiXinSDKBleConnectionServicesCharacteristicsNotifyManager(item, async function (result: any) {
         console.log("result=>", result);
         if (settled) return;
         if (!result.connection) return; // 等下一次回调
@@ -406,43 +406,90 @@ Page({
 
         // 订阅 notify (BleHub 已全局订阅, 这里把页面 listener 也加进去)
         self.notifyMonitorValueChange();
-        // 强制 enable 所有 notify 特征值, 修 SDK 短路跳过订阅导致 type=1/2/9 回包丢失.
-        setTimeout(() => {
-          try { require('../../services/bleHub').bleHub.forceEnableNotify(item.deviceId); }
-          catch (err) { console.warn('[bleConnection] forceEnableNotify 触发失败', err); }
-        }, 300);
+
+        // 5.06-v8 关键加固: forceEnableNotify 改成 Promise.all 等齐, 拿结果再发密钥核准.
+        // 旧版本是 setTimeout 300ms 就发核准, 但 notify enable 是异步, 1s 才完成时
+        // 核准发出去 type=1 永久丢. 现在 await 等 notify 全部 enable 后再发核准.
+        const { bleHub } = require('../../services/bleHub');
+        let notifyResult = { enabled: 0, failed: 0, total: 0 };
+        try {
+          notifyResult = await bleHub.forceEnableNotify(item.deviceId);
+          console.log('[bleConnection] forceEnableNotify 结果:', notifyResult);
+        } catch (err) {
+          console.warn('[bleConnection] forceEnableNotify 抛错', err);
+        }
+        // 诊断快照存 storage, 供 5.5s 后 modal 根因分流用
+        wx.setStorageSync('bleConnDiag', {
+          notifyEnabled: notifyResult.enabled,
+          notifyFailed: notifyResult.failed,
+          notifyTotal: notifyResult.total,
+          passwordCheckCalls: 0,
+          ts: Date.now(),
+        });
+
         // 密钥核准 (SDK 回 type=1 含 VPDeviceMAC/Version, 由 BleHub.handleAutoSync 抓 mac 入 storage).
-        // 重发 3 次 (1.2s / 2.5s / 4s): iOS 上首发可能落在 forceEnableNotify 完成之前, 表不响应.
-        setTimeout(() => { try { veepooFeature.veepooBlePasswordCheckManager(); console.log('[bleConnection] 密钥核准 #1'); } catch(e){} }, 1200);
+        // 重发 3 次 (notify 已 ready, 间隔 1s/1s 给表充足响应时间).
+        const sendPasswordCheck = (label: string) => {
+          try {
+            veepooFeature.veepooBlePasswordCheckManager();
+            console.log('[bleConnection] 密钥核准', label);
+            const diag = wx.getStorageSync('bleConnDiag') || {};
+            diag.passwordCheckCalls = (diag.passwordCheckCalls || 0) + 1;
+            wx.setStorageSync('bleConnDiag', diag);
+          } catch (e) {
+            console.warn('[bleConnection] 密钥核准抛错', label, e);
+          }
+        };
+        // notify ready 后立即发 #1 (旧版本要等 1.2s, 现在 0 延迟)
+        sendPasswordCheck('#1');
         setTimeout(() => {
           if (wx.getStorageSync('VPDevice')) return;
-          try { veepooFeature.veepooBlePasswordCheckManager(); console.log('[bleConnection] 密钥核准 #2 (VPDevice 仍空)'); } catch(e){}
-        }, 2500);
+          sendPasswordCheck('#2 (VPDevice 仍空)');
+        }, 1500);
         setTimeout(() => {
           if (wx.getStorageSync('VPDevice')) return;
-          try { veepooFeature.veepooBlePasswordCheckManager(); console.log('[bleConnection] 密钥核准 #3 (VPDevice 仍空)'); } catch(e){}
-        }, 4000);
-        setTimeout(() => {
-          try { require('../../services/bleHub').bleHub.enableAutoMonitoring(); }
-          catch (err) { console.warn('[bleConnection] enableAutoMonitoring 失败', err); }
+          sendPasswordCheck('#3 (VPDevice 仍空)');
         }, 3000);
         setTimeout(() => {
-          try {
-            const { bleHub } = require('../../services/bleHub');
-            bleHub.pullHistoryFromWatch();
-          } catch (err) { console.warn('[bleConnection] pullHistory 触发失败', err); }
-        }, 5000);
-        // 5.06-v8: 5.5s 后 VPDevice 仍空 = 密钥核准 3 次都没拿到 type=1, 不跳首页.
-        // 旧版本盲跳首页用户看到 4 字段全空, 误以为系统坏了; 现在弹 modal 给重试 / 强行进选项.
+          try { bleHub.enableAutoMonitoring(); }
+          catch (err) { console.warn('[bleConnection] enableAutoMonitoring 失败', err); }
+        }, 2000);
+        setTimeout(() => {
+          try { bleHub.pullHistoryFromWatch(); }
+          catch (err) { console.warn('[bleConnection] pullHistory 触发失败', err); }
+        }, 4000);
+        // 5.06-v8: 5s 后 VPDevice 仍空 -> 不跳首页, 弹根因分流 modal.
+        // 旧版本是 5.5s 后盲跳首页, 用户看到 4 字段全空误以为坏了.
+        // notify 已 ready 后核准间隔缩短为 0/1.5/3s, 5s 给最后一次核准 +2s 缓冲足够.
         setTimeout(() => {
           wx.hideLoading();
           const dev: any = wx.getStorageSync('VPDevice');
           const handshakeOk = dev && (dev.VPDeviceMAC || dev.VPDeviceVersion);
           if (!handshakeOk) {
-            console.warn('[bleConnection] 5.5s 后 VPDevice 仍空, 握手未完成');
+            const diag: any = wx.getStorageSync('bleConnDiag') || {};
+            console.warn('[bleConnection] 握手未完成, 诊断:', diag);
+            // 根因分流: 按 notify 启用情况 + 密钥核准实际调用次数判断
+            let title = '握手未完成';
+            let content = '';
+            if (diag.notifyTotal === 0) {
+              title = 'BLE 服务初始化失败';
+              content = '没找到任何 BLE notify 特征值 (notifyTotal=0). 多半是:\n• SDK 内部错, 重连一次\n• 手表蓝牙固件异常, 重启表试试';
+            } else if (diag.notifyEnabled === 0) {
+              title = 'notify 订阅全部失败';
+              content = `notify 订阅 0/${diag.notifyTotal} 成功. 多半是 BLE 通道刚连上就被系统挂起或断开. 重连一次.`;
+            } else if (diag.notifyEnabled < diag.notifyTotal) {
+              title = 'notify 部分失败 + 表无响应';
+              content = `notify 订阅 ${diag.notifyEnabled}/${diag.notifyTotal} 成功, 但表 3 次密钥核准都没回包.\n大概率手表已被其他手机连着 (BLE 一对一占用). 在那台手机上断开/关蓝牙后重试.`;
+            } else if (!diag.passwordCheckCalls) {
+              title = '密钥核准调用失败';
+              content = 'SDK 内部错, 密钥核准函数没成功调用. 重连一次; 仍不行请重启小程序.';
+            } else {
+              title = '表无响应';
+              content = `notify 已就绪 (${diag.notifyEnabled}/${diag.notifyTotal}), 密钥核准发了 ${diag.passwordCheckCalls} 次但表没回包.\n大概率手表已被其他手机连着 (BLE 一对一占用). 在那台手机上断开/关蓝牙后重试.`;
+            }
             wx.showModal({
-              title: '握手未完成',
-              content: '蓝牙连上了但没收到手表回包 (3 次密钥核准均失败). 通常是:\n1. 手表已被其他手机连着 (BLE 一对一, 占用就不响应)\n2. iOS 系统层残留 paired 状态\n建议重连一次; 仍不行请检查表和其他手机的连接.',
+              title,
+              content: content + '\n\n[诊断: notify=' + diag.notifyEnabled + '/' + diag.notifyTotal + ', 密钥发=' + (diag.passwordCheckCalls || 0) + ']',
               confirmText: '重新连接',
               cancelText: '强行进入',
               success: (m: any) => {
@@ -453,7 +500,7 @@ Page({
             return;
           }
           wx.redirectTo({ url: '/pages/index/index' });
-        }, 5500);
+        }, 5000);
       });
     };
 

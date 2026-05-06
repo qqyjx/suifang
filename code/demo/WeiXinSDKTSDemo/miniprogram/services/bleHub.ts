@@ -459,37 +459,84 @@ class BleHub {
    * 通过 wx 原生 API 显式遍历服务/特征, 强制 enable 所有 notify.
    * 已订阅的会返回 errno=10008 但不影响 (已经开着).
    *
-   * 任何重连路径 (手动 connectBle / app.onShow 自动重连 / 蓝牙重连按钮) 都应调一次,
-   * 才能保证 SDK 协议回包能进 wx.onBLECharacteristicValueChange.
+   * 5.06-v8 关键加固: 改成 Promise + Promise.all 等待所有 notify 真的 enable 完成.
+   * 旧版本是 fire-and-forget, 调用方 setTimeout 300ms 后就发密钥核准, 但 notify
+   * enable 是异步, 慢的 service (尤其 iOS / S101 双协议) 可能 1s 才 enable 完成,
+   * 导致密钥核准发出去时 notify 仍未 ready -> type=1 永久丢失 -> 首页 4 字段空.
+   * 现在调用方 await 拿到结果, 拿到 enabled 数量再决定继续还是诊断报错.
+   *
+   * 返回 { enabled, failed, total }: total 是所有 notify 特征数;
+   * enabled 是真正成功 (含 errCode=10008 已订阅, 视为成功);
+   * failed 是真失败. enabled+failed===total.
    */
-  forceEnableNotify(deviceId: string): void {
-    if (!deviceId) return;
-    wx.getBLEDeviceServices({
-      deviceId,
-      success: (sRes: any) => {
-        console.log('[forceEnableNotify] services count:', sRes.services.length);
-        // 不再按 UUID 过滤 — 所有 service 上所有带 notify 属性的特征都 enable.
-        // S101 杰理芯片同时跑杰理 OTA 协议 + veepoo 私有协议在不同 service 上,
-        // 之前只 enable FEE7 漏掉 veepoo 的 service 导致 type=1/2/9 仍丢失.
-        sRes.services.forEach((svc: any) => {
-          wx.getBLEDeviceCharacteristics({
-            deviceId, serviceId: svc.uuid,
-            success: (cRes: any) => {
-              cRes.characteristics
-                .filter((ch: any) => ch.properties && ch.properties.notify)
-                .forEach((ch: any) => {
-                  wx.notifyBLECharacteristicValueChange({
-                    state: true, deviceId, serviceId: svc.uuid, characteristicId: ch.uuid,
-                    success: () => console.log('[forceEnableNotify] ok', svc.uuid.slice(0, 8), ch.uuid.slice(0, 8)),
-                    fail: (e: any) => console.warn('[forceEnableNotify] fail', svc.uuid.slice(0, 8), ch.uuid.slice(0, 8), e.errMsg || e),
-                  });
-                });
-            },
-            fail: (e: any) => console.warn('[forceEnableNotify] getCharacteristics fail', svc.uuid.slice(0, 8), e.errMsg || e),
+  forceEnableNotify(deviceId: string): Promise<{ enabled: number; failed: number; total: number }> {
+    return new Promise((resolve) => {
+      if (!deviceId) {
+        resolve({ enabled: 0, failed: 0, total: 0 });
+        return;
+      }
+      wx.getBLEDeviceServices({
+        deviceId,
+        success: (sRes: any) => {
+          const services = sRes.services || [];
+          console.log('[forceEnableNotify] services count:', services.length);
+          // 第一阶段: 拉所有 service 的 characteristics (并行 + Promise.all 等齐)
+          Promise.all(services.map((svc: any) => new Promise<{svc: string; ch: string}[]>((res) => {
+            wx.getBLEDeviceCharacteristics({
+              deviceId, serviceId: svc.uuid,
+              success: (cRes: any) => {
+                const notifyChars = (cRes.characteristics || [])
+                  .filter((ch: any) => ch.properties && ch.properties.notify)
+                  .map((ch: any) => ({ svc: svc.uuid, ch: ch.uuid }));
+                res(notifyChars);
+              },
+              fail: (e: any) => {
+                console.warn('[forceEnableNotify] getCharacteristics fail', svc.uuid.slice(0, 8), e.errMsg || e);
+                res([]);
+              },
+            });
+          }))).then((charLists) => {
+            const allChars = charLists.flat();
+            const total = allChars.length;
+            if (total === 0) {
+              console.warn('[forceEnableNotify] 没有任何 notify 特征值, SDK 内部错或 BLE 物理层未连接');
+              resolve({ enabled: 0, failed: 0, total: 0 });
+              return;
+            }
+            // 第二阶段: 并行 enable 所有 notify, Promise.all 等齐
+            let enabled = 0;
+            let failed = 0;
+            Promise.all(allChars.map(({ svc, ch }) => new Promise<void>((res) => {
+              wx.notifyBLECharacteristicValueChange({
+                state: true, deviceId, serviceId: svc, characteristicId: ch,
+                success: () => {
+                  enabled++;
+                  console.log('[forceEnableNotify] ok', svc.slice(0, 8), ch.slice(0, 8));
+                  res();
+                },
+                fail: (e: any) => {
+                  // errCode=10008 是"已订阅", 算成功 (实际 notify 是开着的)
+                  if (e && (e.errCode === 10008 || /already.*notify/i.test(e.errMsg || ''))) {
+                    enabled++;
+                    console.log('[forceEnableNotify] ok (already enabled)', svc.slice(0, 8), ch.slice(0, 8));
+                  } else {
+                    failed++;
+                    console.warn('[forceEnableNotify] fail', svc.slice(0, 8), ch.slice(0, 8), e.errMsg || e);
+                  }
+                  res();
+                },
+              });
+            }))).then(() => {
+              console.log(`[forceEnableNotify] 完成: ${enabled}/${total} enabled, ${failed} failed`);
+              resolve({ enabled, failed, total });
+            });
           });
-        });
-      },
-      fail: (e: any) => console.warn('[forceEnableNotify] getServices fail', e.errMsg || e),
+        },
+        fail: (e: any) => {
+          console.warn('[forceEnableNotify] getServices fail', e.errMsg || e);
+          resolve({ enabled: 0, failed: 0, total: 0 });
+        },
+      });
     });
   }
 
