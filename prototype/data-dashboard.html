@@ -1,0 +1,1284 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=2.0">
+<title>智能随访 · 实时数据看板</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue",
+               "Microsoft YaHei", "Source Han Sans CN", sans-serif;
+  color: #1f2937;
+  background: #f5f7fa;
+  padding: 20px 16px 64px;
+  min-height: 100vh;
+  font-size: 15px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+.container { max-width: 1200px; margin: 0 auto; }
+
+/* Tabs (顶部设备切换) */
+.tabs {
+  display: flex; gap: 6px; margin-bottom: 12px;
+  background: #fff; border-radius: 12px; padding: 6px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+  max-width: max-content;
+}
+.tab {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 8px 16px; border-radius: 8px;
+  font-size: 14px; font-weight: 500; color: #6b7280;
+  cursor: pointer; text-decoration: none; transition: all .15s;
+  user-select: none;
+}
+.tab:hover { background: #f3f4f6; color: #1f2937; }
+.tab.active {
+  background: linear-gradient(135deg, #2c6ef2 0%, #4a86ff 100%);
+  color: #fff; box-shadow: 0 2px 8px rgba(44,110,242,0.32);
+}
+
+/* Header */
+.header {
+  background: linear-gradient(135deg, #2c6ef2 0%, #4a86ff 100%);
+  color: #fff;
+  border-radius: 16px;
+  padding: 24px 28px;
+  margin-bottom: 16px;
+  box-shadow: 0 4px 16px rgba(44,110,242,0.25);
+  display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;
+}
+.header h1 { font-size: 22px; font-weight: 600; letter-spacing: 2px; margin-bottom: 4px; }
+.header .sub { font-size: 13px; opacity: 0.9; }
+.header .actions { display: flex; gap: 10px; align-items: center; }
+.refresh-btn {
+  background: rgba(255,255,255,0.2); color: #fff;
+  padding: 8px 16px; border-radius: 20px;
+  font-size: 13px; cursor: pointer; border: 1px solid rgba(255,255,255,0.3);
+  transition: background 0.2s;
+}
+.refresh-btn:hover, .refresh-btn:active { background: rgba(255,255,255,0.32); }
+.refresh-btn .spinner { display: inline-block; transition: transform 0.5s; }
+.refresh-btn.spinning .spinner { animation: spin 1s linear infinite; }
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+.auto-tag {
+  font-size: 12px; opacity: 0.85;
+  background: rgba(255,255,255,0.12); padding: 5px 10px; border-radius: 12px;
+}
+
+/* Server / fetch status */
+.status-bar {
+  background: #fff; border-radius: 12px;
+  padding: 14px 20px; margin-bottom: 16px;
+  display: flex; flex-wrap: wrap; gap: 18px; align-items: center;
+  font-size: 13px; color: #6b7280;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+}
+.status-bar .item { display: flex; align-items: center; gap: 6px; }
+.status-bar .label { color: #9ca3af; }
+.status-bar .value { color: #1f2937; font-weight: 500; }
+.dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.dot-ok { background: #2faa55; box-shadow: 0 0 0 0 rgba(47,170,85,0.4); animation: pulse 2s infinite; }
+.dot-err { background: #d04848; }
+.dot-warn { background: #f59e0b; }
+@keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(47,170,85,0.4); } 50% { box-shadow: 0 0 0 6px rgba(47,170,85,0); } }
+.render-meta { margin-left: auto; color: #9ca3af; font-size: 12px; }
+
+/* Overall stats row */
+.stats-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px; margin-bottom: 20px;
+}
+.stat-card {
+  background: #fff; border-radius: 12px;
+  padding: 18px 20px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.05);
+  border-left: 3px solid #2c6ef2;
+}
+.stat-card .num { font-size: 26px; font-weight: 700; color: #1f2937; line-height: 1.2; }
+.stat-card .label { font-size: 12px; color: #6b7280; margin-top: 4px; }
+.stat-card .stat-sub {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: #fff7ed;
+  color: #c2410c;
+  font-size: 11px;
+  font-weight: 600;
+}
+.stat-card.green { border-left-color: #2faa55; }
+.stat-card.orange { border-left-color: #f59e0b; }
+.stat-card.red { border-left-color: #d04848; }
+
+/* Section title */
+.section-title {
+  font-size: 15px; font-weight: 600; color: #1f2937;
+  margin: 20px 0 12px; padding-left: 12px; border-left: 4px solid #2c6ef2;
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+}
+.section-title .meta { font-weight: 400; color: #9ca3af; font-size: 12px; margin-left: 10px; }
+
+/* Toolbar (search + filters) */
+.toolbar {
+  background: #fff; border-radius: 12px;
+  padding: 14px 16px; margin-bottom: 14px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.05);
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) repeat(3, minmax(120px, 180px)) auto;
+  gap: 10px 12px;
+  align-items: center;
+}
+@media (max-width: 760px) {
+  .toolbar { grid-template-columns: 1fr 1fr; }
+  .toolbar .search-wrap { grid-column: span 2; }
+  .toolbar .clear-btn { grid-column: span 2; justify-self: stretch; }
+}
+.search-wrap { position: relative; }
+.search-wrap .icon {
+  position: absolute; left: 12px; top: 50%; transform: translateY(-50%);
+  color: #9ca3af; font-size: 14px; pointer-events: none;
+}
+.toolbar input[type="text"] {
+  width: 100%; padding: 9px 12px 9px 34px;
+  border: 1px solid #e5e7eb; border-radius: 8px;
+  font-size: 14px; color: #1f2937; background: #f9fafb;
+  outline: none; transition: border 0.2s, background 0.2s;
+}
+.toolbar input[type="text"]:focus { border-color: #2c6ef2; background: #fff; }
+.toolbar select {
+  width: 100%; padding: 9px 10px;
+  border: 1px solid #e5e7eb; border-radius: 8px;
+  font-size: 13px; color: #1f2937; background: #f9fafb;
+  outline: none; cursor: pointer;
+}
+.toolbar select:focus { border-color: #2c6ef2; background: #fff; }
+.clear-btn {
+  padding: 9px 14px; border: 1px solid #e5e7eb; border-radius: 8px;
+  background: #fff; color: #6b7280; cursor: pointer; font-size: 13px;
+  white-space: nowrap; transition: all 0.2s;
+}
+.clear-btn:hover { background: #f0f5ff; color: #2c6ef2; border-color: #c7dafe; }
+
+/* Patient cards */
+.patients { display: grid; grid-template-columns: 1fr; gap: 14px; }
+@media (min-width: 800px) { .patients { grid-template-columns: 1fr 1fr; } }
+@media (min-width: 1200px) { .patients { grid-template-columns: 1fr 1fr 1fr; } }
+
+.patient-card {
+  background: #fff; border-radius: 14px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+  overflow: hidden;
+}
+.patient-card.has-today .patient-header { background: linear-gradient(135deg, #2faa55 0%, #4cc46f 100%); }
+.patient-card.is-null .patient-header { background: linear-gradient(135deg, #9ca3af 0%, #6b7280 100%); }
+.patient-header {
+  background: linear-gradient(135deg, #2c6ef2 0%, #4a86ff 100%);
+  color: #fff; padding: 14px 18px;
+}
+.patient-no { font-size: 18px; font-weight: 600; letter-spacing: 1px; }
+.patient-no mark {
+  background: rgba(255,255,0,0.55); color: inherit;
+  border-radius: 3px; padding: 0 2px;
+}
+.patient-tag {
+  display: inline-block; background: rgba(255,255,255,0.22);
+  padding: 3px 10px; border-radius: 10px;
+  font-size: 11px; margin-top: 4px; letter-spacing: 0.5px;
+}
+.patient-body { padding: 16px 18px; }
+.metric-row {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 6px 0; font-size: 13px; border-bottom: 1px solid #f0f2f5;
+}
+.metric-row:last-child { border-bottom: none; }
+.metric-row .key { color: #6b7280; }
+.metric-row .val { color: #1f2937; font-weight: 500; }
+.metric-row .val.muted { color: #9ca3af; font-weight: 400; }
+
+.type-bars { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 10px; }
+.type-pill {
+  background: #f0f5ff; color: #2c6ef2;
+  padding: 4px 10px; border-radius: 10px;
+  font-size: 11px; font-weight: 500;
+}
+.type-pill.bp { background: #fee2e2; color: #d04848; }
+.type-pill.heart { background: #fef3c7; color: #d97706; }
+.type-pill.step { background: #e0f2fe; color: #0284c7; }
+.type-pill.spo2 { background: #ede9fe; color: #7c3aed; }
+.type-pill.temp { background: #fce7f3; color: #be185d; }
+
+/* Time-since */
+.time-since {
+  font-size: 11px; color: #9ca3af; margin-top: 8px; font-style: italic;
+}
+.time-since.fresh { color: #2faa55; font-weight: 500; font-style: normal; }
+.time-since.stale { color: #f59e0b; }
+.time-since.dead { color: #d04848; }
+.card-hint { font-size: 11px; color: #2c6ef2; margin-top: 8px; text-align: right; opacity: .7; }
+.patient-card:hover { box-shadow: 0 4px 18px rgba(44,110,242,.18); transform: translateY(-2px); transition: all .15s; }
+
+/* 患者详情 modal */
+.modal-mask { position: fixed; inset: 0; background: rgba(15,23,42,.5); display: none;
+  align-items: flex-start; justify-content: center; z-index: 100; padding: 24px 12px; overflow-y: auto; }
+.modal-mask.open { display: flex; }
+.modal { background: #fff; border-radius: 16px; max-width: 920px; width: 100%; margin: auto;
+  box-shadow: 0 20px 60px rgba(0,0,0,.25); overflow: hidden; }
+.modal-header { background: linear-gradient(135deg, #2c6ef2 0%, #4a86ff 100%); color: #fff;
+  padding: 18px 26px; display: flex; justify-content: space-between; align-items: flex-start; }
+.modal-header h2 { font-size: 20px; font-weight: 600; }
+.modal-header .modal-sub { font-size: 13px; opacity: .9; margin-top: 4px; }
+.modal-close { background: rgba(255,255,255,.2); color: #fff; border: 0; width: 32px; height: 32px;
+  border-radius: 50%; cursor: pointer; font-size: 18px; line-height: 1; }
+.modal-close:hover { background: rgba(255,255,255,.32); }
+.modal-body { padding: 22px 26px; max-height: 76vh; overflow-y: auto; }
+.modal-section { margin-bottom: 22px; }
+.modal-section h3 { font-size: 14px; font-weight: 600; margin-bottom: 10px; padding-left: 10px;
+  border-left: 3px solid #2c6ef2; display: flex; align-items: center; gap: 8px; }
+.modal-section h3 .badge { font-size: 11px; background: #eef4ff; color: #2c6ef2; padding: 1px 8px; border-radius: 10px; font-weight: 600; }
+.detail-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.detail-table th { background: #f9fafb; color: #6b7280; text-align: left; padding: 7px 10px;
+  border-bottom: 2px solid #e5e7eb; font-weight: 600; white-space: nowrap; }
+.detail-table td { padding: 7px 10px; border-bottom: 1px solid #f3f4f6; white-space: nowrap; }
+.detail-table tr:last-child td { border-bottom: none; }
+.detail-table tr:hover td { background: #f8fbff; }
+.modal-loading { text-align: center; padding: 40px; color: #9ca3af; }
+
+/* Pagination */
+.pagination {
+  display: flex; justify-content: center; align-items: center;
+  gap: 6px; margin-top: 24px; flex-wrap: wrap;
+}
+.pagination .info {
+  margin-right: 10px; color: #6b7280; font-size: 13px;
+}
+.pagination button, .pagination .ellipsis {
+  min-width: 36px; height: 36px; padding: 0 10px;
+  border: 1px solid #e5e7eb; background: #fff; color: #1f2937;
+  border-radius: 8px; cursor: pointer; font-size: 13px;
+  display: inline-flex; align-items: center; justify-content: center;
+  transition: all 0.15s;
+}
+.pagination button:hover:not(:disabled):not(.active) {
+  border-color: #2c6ef2; color: #2c6ef2;
+}
+.pagination button.active {
+  background: #2c6ef2; color: #fff; border-color: #2c6ef2; font-weight: 600;
+}
+.pagination button:disabled {
+  color: #d1d5db; cursor: not-allowed; background: #f9fafb;
+}
+.pagination .ellipsis {
+  border: none; background: transparent; color: #9ca3af; cursor: default;
+}
+.pagination .jump {
+  display: inline-flex; align-items: center; gap: 6px;
+  margin-left: 10px; color: #6b7280; font-size: 13px;
+}
+.pagination .jump input {
+  width: 56px; height: 36px; padding: 0 8px;
+  border: 1px solid #e5e7eb; border-radius: 8px;
+  font-size: 13px; text-align: center; outline: none;
+}
+.pagination .jump input:focus { border-color: #2c6ef2; }
+
+/* Empty / Loading / error */
+.empty, .loading, .error {
+  background: #fff; border-radius: 12px;
+  padding: 60px 20px; text-align: center;
+  color: #6b7280; font-size: 14px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+  grid-column: 1 / -1;
+}
+.empty .icon { font-size: 32px; margin-bottom: 8px; opacity: 0.5; }
+.error { color: #d04848; }
+.error pre { font-size: 11px; color: #9ca3af; margin-top: 12px; text-align: left; white-space: pre-wrap; }
+
+.footer { text-align: center; color: #9ca3af; font-size: 11px; margin-top: 32px; }
+.footer a { color: #2c6ef2; text-decoration: none; }
+.footer .kbd {
+  display: inline-block; padding: 1px 6px; border: 1px solid #e5e7eb;
+  border-radius: 4px; background: #fff; color: #6b7280; font-size: 10px;
+  font-family: monospace; margin: 0 2px;
+}
+</style>
+</head>
+<body>
+<div class="container">
+
+  <!-- 设备切换 tabs (三模块: 智能手表 / 诊脉仪 / iwown 4G) -->
+  <div class="tabs">
+    <a class="tab active" href="#">⌚ S101</a>
+    <a class="tab" href="pulse-dashboard.html">🩺 诊脉仪</a>
+    <a class="tab" href="iwown-dashboard.html">📶 iwown 4G</a>
+  </div>
+
+  <div class="header">
+    <div>
+      <h1>智能随访 · 实时数据看板</h1>
+      <div class="sub">连接到生产数据库 · 自动刷新</div>
+    </div>
+    <div class="actions">
+      <span class="auto-tag" id="autoTag">自动刷新 30s</span>
+      <div class="refresh-btn" id="refreshBtn"><span class="spinner">⟳</span> 立即刷新</div>
+    </div>
+  </div>
+
+  <div class="status-bar">
+    <div class="item"><span class="dot dot-warn" id="connDot"></span><span class="label">API</span></div>
+    <div class="item"><span class="label">最后刷新</span><span class="value" id="lastFetch">--</span></div>
+    <div class="item"><span class="label">服务端时间</span><span class="value" id="serverTime">--</span></div>
+    <div class="item"><span class="label">数据表行数</span><span class="value" id="rowCount">--</span></div>
+    <div class="item"><span class="label">总记录条数</span><span class="value" id="totalRecords">--</span></div>
+    <div class="item"><span class="label">门诊号数</span><span class="value" id="patientCount">--</span></div>
+    <div class="render-meta" id="renderMeta"></div>
+  </div>
+
+  <div class="stats-grid" id="statsGrid"></div>
+
+  <div class="section-title">
+    患者数据
+    <span class="meta" id="patientMeta"></span>
+  </div>
+
+  <div class="toolbar">
+    <div class="search-wrap">
+      <span class="icon">🔍</span>
+      <input type="text" id="searchInput" placeholder="搜索门诊号 / deviceId (按 / 聚焦)" autocomplete="off">
+    </div>
+    <select id="filterStatus" title="活跃状态">
+      <option value="all">全部状态</option>
+      <option value="today">今日活跃</option>
+      <option value="7d">7 天内</option>
+      <option value="stale">久未更新 (3 天+)</option>
+      <option value="null">NULL 历史</option>
+    </select>
+    <select id="filterType" title="数据类型">
+      <option value="all">全部类型</option>
+    </select>
+    <select id="sortBy" title="排序方式">
+      <option value="latest">最新采集时间 ↓</option>
+      <option value="latest-asc">最早采集时间 ↑</option>
+      <option value="count">采集条数 ↓</option>
+      <option value="device">deviceId ↓</option>
+      <option value="patient">门诊号 ↑</option>
+    </select>
+    <button class="clear-btn" id="clearFilters" type="button">重置</button>
+    <button class="clear-btn" id="exportXlsx" type="button" title="把当前筛选后的患者列表导出为 Excel">📥 导出 Excel</button>
+  </div>
+
+  <div id="patients" class="patients">
+    <div class="loading">正在加载数据…</div>
+  </div>
+
+  <div class="pagination" id="pagination" style="display:none;"></div>
+
+  <!-- 患者详情 modal -->
+  <div class="modal-mask" id="patientModal">
+    <div class="modal" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <div>
+          <h2 id="pmTitle">--</h2>
+          <div class="modal-sub" id="pmSub">--</div>
+        </div>
+        <button class="modal-close" onclick="closePatientDetail()" title="关闭 (Esc)">×</button>
+      </div>
+      <div class="modal-body" id="pmBody"><div class="modal-loading">载入中…</div></div>
+    </div>
+  </div>
+
+  <div class="footer">
+    数据来源
+    <a href="https://dc.ncrc.org.cn/api2/api/patients/summary" target="_blank">/api/patients/summary</a>
+    (回落 <a href="https://dc.ncrc.org.cn/api2/api/data" target="_blank">/api/data</a>)
+    · 服务端 v5.06-v10 (gzip)
+    · <a href="https://github.com/qqyjx/suifang" target="_blank">GitHub 仓库</a>
+    · 快捷键 <span class="kbd">/</span> 搜索 <span class="kbd">←</span><span class="kbd">→</span> 翻页
+  </div>
+
+</div>
+
+<script>
+// v10: 默认走 /api/patients/summary (服务端聚合 + gzip), 响应体比 /api/data 小 ~50x.
+// 老服务器 (没部署 v10) 自动回落到 /api/data 客户端聚合.
+const API_BASE = 'https://dc.ncrc.org.cn/api2';
+const SUMMARY_URL = API_BASE + '/api/patients/summary';
+const DATA_URL = API_BASE + '/api/data';
+const STATUS_URL = API_BASE + '/api/status';
+const REFRESH_INTERVAL_MS = 30000;
+const PAGE_SIZE_OPTIONS = [20, 50, 100];
+
+let autoRefreshTimer = null;
+let lastDataHash = '';
+let cachedPatients = [];
+let cachedTypes = {};
+let cachedTypesValid = {};  // v10 patch: 各 type "有效"全局计数 (目前只日综合)
+
+const state = {
+  search: '',
+  filterStatus: 'all',
+  filterType: 'all',
+  sortBy: 'latest',
+  page: 1,
+  pageSize: 20,
+};
+
+function fmtCST(iso) {
+  if (!iso) return '--';
+  try {
+    let s = iso.length === 19 ? iso + 'Z' : iso;
+    const d = new Date(s);
+    return d.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }).replace(/\//g, '-');
+  } catch { return iso.slice(0, 19); }
+}
+function fmtSince(iso) {
+  if (!iso) return { text: '无数据', cls: 'dead' };
+  try {
+    let s = iso.length === 19 ? iso + 'Z' : iso;
+    const ms = Date.now() - new Date(s).getTime();
+    const min = Math.floor(ms / 60000);
+    if (min < 0) return { text: '时间异常', cls: 'stale' };
+    if (min < 5) return { text: `刚刚 (${min} 分钟前)`, cls: 'fresh' };
+    if (min < 60) return { text: `${min} 分钟前`, cls: 'fresh' };
+    const h = Math.floor(min / 60);
+    if (h < 24) return { text: `${h} 小时前`, cls: 'fresh' };
+    const d = Math.floor(h / 24);
+    if (d < 3) return { text: `${d} 天前`, cls: 'fresh' };
+    if (d < 7) return { text: `${d} 天前`, cls: 'stale' };
+    return { text: `${d} 天前 (久未更新)`, cls: 'dead' };
+  } catch { return { text: '--', cls: 'stale' }; }
+}
+
+function typeClass(name) {
+  if (name === '血压') return 'bp';
+  if (name === '心率') return 'heart';
+  if (name === '步数') return 'step';
+  if (name === '血氧') return 'spo2';
+  if (name === '体温') return 'temp';
+  return '';
+}
+
+function setConnState(s) {
+  const dot = document.getElementById('connDot');
+  dot.className = 'dot ' + (s === 'ok' ? 'dot-ok' : s === 'warn' ? 'dot-warn' : 'dot-err');
+}
+
+function escapeHtml(str) {
+  return String(str).replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[c]));
+}
+
+function highlightMatch(text, q) {
+  const safe = escapeHtml(text);
+  if (!q) return safe;
+  const idx = text.toLowerCase().indexOf(q.toLowerCase());
+  if (idx < 0) return safe;
+  const before = escapeHtml(text.slice(0, idx));
+  const hit = escapeHtml(text.slice(idx, idx + q.length));
+  const after = escapeHtml(text.slice(idx + q.length));
+  return `${before}<mark>${hit}</mark>${after}`;
+}
+
+/* ----------------- Fetch -----------------
+ * v10 策略: 优先打 /api/patients/summary (服务端聚合, 响应小).
+ *   - 成功 → 直接喂给 ingestSummary, 不需要客户端再做大 JSON 聚合
+ *   - 404 (老服务器没部署 v10) → 自动回落 /api/data 走客户端 aggregate()
+ */
+async function fetchAndRender() {
+  const btn = document.getElementById('refreshBtn');
+  btn.classList.add('spinning');
+  try {
+    setConnState('warn');
+    const [summaryRes, statusRes] = await Promise.allSettled([
+      fetch(SUMMARY_URL, { cache: 'no-store' }),
+      fetch(STATUS_URL, { cache: 'no-store' })
+    ]);
+
+    if (statusRes.status === 'fulfilled' && statusRes.value.ok) {
+      const status = await statusRes.value.json();
+      document.getElementById('serverTime').textContent = status.server_time || '--';
+    }
+    document.getElementById('lastFetch').textContent = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+
+    let usedSummary = false;
+    if (summaryRes.status === 'fulfilled' && summaryRes.value.ok) {
+      const summary = await summaryRes.value.json();
+      document.getElementById('rowCount').textContent = summary.rows ?? '--';
+      ingestSummary(summary);
+      usedSummary = true;
+    } else {
+      // fallback: 老服务器或临时 5xx → 拉详细 /api/data 客户端聚合
+      const dataRes = await fetch(DATA_URL, { cache: 'no-store' });
+      if (!dataRes.ok) throw new Error('/api/data fetch 失败: ' + dataRes.statusText);
+      const data = await dataRes.json();
+      document.getElementById('rowCount').textContent = data.count;
+      aggregate(data);
+    }
+    setConnState('ok');
+    renderAll();
+    // 调试用: 状态栏标记本次使用了哪个端点
+    const meta = document.getElementById('renderMeta');
+    if (meta) meta.dataset.endpoint = usedSummary ? 'summary' : 'data';
+  } catch (err) {
+    console.error(err);
+    setConnState('err');
+    document.getElementById('patients').innerHTML =
+      '<div class="error">❌ 拉取数据失败<pre>' + escapeHtml(err.message || String(err)) + '</pre>' +
+      '<br>请检查网络/VPN, 或刷新页面重试.</div>';
+    document.getElementById('pagination').style.display = 'none';
+  } finally {
+    setTimeout(() => btn.classList.remove('spinning'), 500);
+  }
+}
+
+/* v10 patch: 日综合空跑判定 (与 health_server.py _is_daily_empty 对齐).
+   Veepoo SDK 回放出来的 dailyRecords 经常字段全空, 客户端兜底判 (只在 /api/data fallback 路径用). */
+const DAILY_KEY_FIELDS = ['date', 'step', 'sleepData', 'pulseReat', 'bloodPressure',
+  'bloodOxygen', 'bloodGlucose', 'HRVData', 'pressure', 'respirationRate',
+  'sleepStatus', 'bloodLiquid'];
+function isDailyEmpty(dailyRecords) {
+  if (!Array.isArray(dailyRecords) || dailyRecords.length === 0) return true;
+  const isFilled = v => v !== null && v !== undefined && v !== '' && v !== 0 &&
+    v !== '0' && v !== '0.0' && !(Array.isArray(v) && v.length === 0) &&
+    !(typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length === 0);
+  for (const r of dailyRecords) {
+    if (!r || typeof r !== 'object') continue;
+    for (const k of DAILY_KEY_FIELDS) {
+      if (isFilled(r[k])) return false;
+    }
+    const bt = r.bodyTemperature;
+    if (bt && typeof bt === 'object') {
+      for (const v of Object.values(bt)) {
+        if (isFilled(v)) return false;
+      }
+    }
+  }
+  return true;
+}
+
+/* v10: 服务端 summary 直接入缓存, 不需要解 records 大 JSON. */
+function ingestSummary(summary) {
+  const patients = summary.patients || [];
+  const globalTypes = {};
+  const globalTypesValid = {};  // v10 patch: 各 type "有效"全局计数 (目前只日综合)
+  let totalRecords = 0;
+
+  cachedPatients = patients.map(p => {
+    Object.entries(p.types || {}).forEach(([k, v]) => {
+      globalTypes[k] = (globalTypes[k] || 0) + v;
+    });
+    Object.entries(p.typesValid || {}).forEach(([k, v]) => {
+      globalTypesValid[k] = (globalTypesValid[k] || 0) + v;
+    });
+    totalRecords += p.count || 0;
+    const devices = (p.devices || []).slice().sort((a, b) => a - b);
+    return {
+      pn: p.patientNo == null ? 'NULL' : p.patientNo,
+      count: p.count || 0,
+      types: p.types || {},
+      typesValid: p.typesValid || {},
+      latest: (p.latest || '').slice(0, 19),
+      earliest: (p.earliest || '').slice(0, 19),
+      devices,
+      maxDevice: devices.length ? Math.max(...devices) : 0,
+      typeKeys: Object.keys(p.types || {}),
+    };
+  });
+  cachedTypes = globalTypes;
+  cachedTypesValid = globalTypesValid;
+
+  document.getElementById('totalRecords').textContent = totalRecords.toLocaleString();
+  document.getElementById('patientCount').textContent = cachedPatients.length;
+}
+
+/* ----------------- Aggregation (cached) ----------------- */
+function aggregate(data) {
+  const records = data.records || [];
+  // Cheap hash: row count + last device summary. Skip re-aggregate if unchanged.
+  const hash = data.count + ':' + records.length + ':' +
+    records.map(r => (r.deviceId || '') + ':' + Object.keys(r.data || {}).length).join('|');
+  if (hash === lastDataHash && cachedPatients.length) return;
+  lastDataHash = hash;
+
+  const patientMap = new Map();
+  let totalRecords = 0;
+  const globalTypes = {};
+  const globalTypesValid = {};  // v10 patch: 各 type "有效"全局计数 (目前只日综合)
+
+  records.forEach(row => {
+    const big = row.data || {};
+    Object.entries(big).forEach(([typeName, recs]) => {
+      if (!Array.isArray(recs)) return;
+      globalTypes[typeName] = (globalTypes[typeName] || 0) + recs.length;
+      recs.forEach(rec => {
+        totalRecords++;
+        const pn = rec['门诊号'] || 'NULL';
+        if (!patientMap.has(pn)) {
+          patientMap.set(pn, {
+            pn, count: 0, types: {}, typesValid: {},
+            latest: '', earliest: '', devices: new Set()
+          });
+        }
+        const p = patientMap.get(pn);
+        p.count++;
+        p.types[typeName] = (p.types[typeName] || 0) + 1;
+        p.devices.add(row.deviceId);
+        // v10 patch: 日综合有效判定 (优先用服务端 is_empty 标记, 老数据现场判)
+        if (typeName === '日综合') {
+          let isEmpty = rec.is_empty;
+          if (isEmpty === undefined) isEmpty = isDailyEmpty(rec.dailyRecords);
+          if (!isEmpty) {
+            p.typesValid['日综合'] = (p.typesValid['日综合'] || 0) + 1;
+            globalTypesValid['日综合'] = (globalTypesValid['日综合'] || 0) + 1;
+          }
+        }
+        const ts = (rec['采集时间'] || '').slice(0, 19);
+        if (ts) {
+          if (!p.latest || ts > p.latest) p.latest = ts;
+          if (!p.earliest || ts < p.earliest) p.earliest = ts;
+        }
+      });
+    });
+  });
+
+  cachedPatients = [...patientMap.values()].map(p => ({
+    ...p,
+    devices: [...p.devices].sort((a, b) => a - b),
+    maxDevice: Math.max(...p.devices),
+    typeKeys: Object.keys(p.types),
+  }));
+  cachedTypes = globalTypes;
+  cachedTypesValid = globalTypesValid;
+
+  document.getElementById('totalRecords').textContent = totalRecords.toLocaleString();
+  document.getElementById('patientCount').textContent = patientMap.size;
+}
+
+/* ----------------- Filter + Sort + Paginate ----------------- */
+function applyFiltersSort() {
+  const today = new Date().toISOString().slice(0, 10);
+  const sevenDaysAgo = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
+  const threeDaysAgo = new Date(Date.now() - 3 * 86400000).toISOString().slice(0, 10);
+  const q = state.search.trim().toLowerCase();
+
+  let out = cachedPatients.filter(p => {
+    if (q) {
+      const inPn = String(p.pn).toLowerCase().includes(q);
+      const inDev = p.devices.some(d => String(d).toLowerCase().includes(q));
+      if (!inPn && !inDev) return false;
+    }
+    if (state.filterStatus !== 'all') {
+      const isNull = p.pn === 'NULL';
+      const day = (p.latest || '').slice(0, 10);
+      switch (state.filterStatus) {
+        case 'today': if (isNull || day !== today) return false; break;
+        case '7d':    if (isNull || !day || day < sevenDaysAgo) return false; break;
+        case 'stale': if (isNull || (day && day >= threeDaysAgo)) return false; break;
+        case 'null':  if (!isNull) return false; break;
+      }
+    }
+    if (state.filterType !== 'all' && !p.types[state.filterType]) return false;
+    return true;
+  });
+
+  out.sort((a, b) => {
+    if (a.pn === 'NULL' && b.pn !== 'NULL') return 1;
+    if (b.pn === 'NULL' && a.pn !== 'NULL') return -1;
+    switch (state.sortBy) {
+      case 'latest':     return (b.latest || '').localeCompare(a.latest || '');
+      case 'latest-asc': return (a.latest || '￿').localeCompare(b.latest || '￿');
+      case 'count':      return b.count - a.count;
+      case 'device':     return b.maxDevice - a.maxDevice;
+      case 'patient':    return String(a.pn).localeCompare(String(b.pn), 'zh-CN');
+      default:           return 0;
+    }
+  });
+
+  return out;
+}
+
+/* ----------------- 导出 Excel ----------------- */
+// 儿童医院"就诊卡信息收集表"提供的就诊卡号白名单 (= S101 门诊号, 10 位)。
+// 导出时按此名单分流: 命中 → 归儿童医院; 未命中(且非 NULL) → 归北医三院。
+// 名单更新: 直接改这个数组即可。来源: 就诊卡信息收集表.xlsx (2026-06-03, 30 个有效卡号)。
+const ERTONG_HOSPITAL_CARDS = new Set([
+  "0007861058","0008786410","0008831191","0009110472","0009160483",
+  "0009261373","0009599173","0010059891","0010090645","0010339582",
+  "0010493082","0010594699","0010600256","0010625917","0010654009",
+  "0010670114","0011831072","0012217221","0012225740","0012325296",
+  "0012512227","0012518185","0012712518","0012865682","0012866801",
+  "0013732978","0014305682","0014364463","0014942714","0015140956"
+]);
+
+// 每种体征类型的列定义 (列标题 -> 取值字段)。源自 /api/data 实测全部 11 类。
+// 公共列(门诊号/设备/采集时间)统一前置, 这里只列各类型专属体征字段。
+// 看板/明细/导出统一隐藏的体征类型。
+// 日综合: Veepoo 手表"日汇总"接口, 实测 98% 是空跑(dailyRecords 空壳), 真实体征
+// 都在 步数/血压/心率/血氧/体温 等单项里, 对医院无用, 故隐藏。
+const HIDE_TYPES = new Set(['日综合']);
+
+const DETAIL_COLS = {
+  '心率':     [['心率值', '心率值'], ['心率状态', '心率状态']],
+  '血压':     [['高压', '高压'], ['低压', '低压'], ['脉搏', '脉搏'], ['风险等级', '风险等级']],
+  '血氧':     [['血氧饱和度', '血氧饱和度'], ['心率', '心率']],
+  '体温':     [['体温', '体温'], ['皮肤温度', '皮肤温度']],
+  '血糖':     [['血糖值(mmol/L)', '血糖值_mmol_L'], ['餐态', '餐态']],
+  '步数':     [['步数', '步数'], ['卡路里', '卡路里'], ['距离(米)', '距离_米']],
+  '睡眠':     [['入睡时间', '入睡时间'], ['醒来时间', '醒来时间'], ['深睡(分钟)', '深睡_分钟'], ['浅睡(分钟)', '浅睡_分钟']],
+  '血液成分': [['尿酸', '尿酸'], ['胆固醇', '胆固醇'], ['甘油三酯', '甘油三酯']],
+  '身体成分': [['体重', '体重'], ['BMI', 'BMI'], ['体脂率', '体脂率'], ['肌肉量', '肌肉量']],
+  '心电':     [['心率', '心率'], ['诊断', '诊断'], ['波形采样点数', '波形采样点数']],
+  '日综合':   [['原始记录(dailyRecords)', 'dailyRecords']],
+};
+
+const xmlEsc = s => String(s == null ? '' : s)
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;');
+
+// 生成一个 worksheet 的 XML (Excel 2003 SpreadsheetML, 支持多 sheet 纯前端)
+function buildSheet(name, headerCells, rows) {
+  const cell = (v, isNum) => {
+    if (v === null || v === undefined || v === '') return '<Cell><Data ss:Type="String"></Data></Cell>';
+    if (isNum && typeof v === 'number')
+      return `<Cell><Data ss:Type="Number">${v}</Data></Cell>`;
+    return `<Cell><Data ss:Type="String">${xmlEsc(v)}</Data></Cell>`;
+  };
+  const headerRow = '<Row>' + headerCells.map(h =>
+    `<Cell ss:StyleID="hdr"><Data ss:Type="String">${xmlEsc(h)}</Data></Cell>`).join('') + '</Row>';
+  const bodyRows = rows.map(r => '<Row>' + r.map(c =>
+    cell(c.v, c.num)).join('') + '</Row>').join('');
+  // sheet 名不能含 []:*?/\ 且 ≤31 字符
+  const safeName = String(name).replace(/[\[\]:*?/\\]/g, '_').slice(0, 31);
+  return `<Worksheet ss:Name="${xmlEsc(safeName)}"><Table>${headerRow}${bodyRows}</Table></Worksheet>`;
+}
+
+// 点导出 → 选医院 → 拉 /api/data 明细 → 按医院切 → 每种体征一个 sheet
+async function exportToExcel() {
+  const choice = prompt(
+    '需要导出哪家医院的数据？\n' +
+    '输入 1 = 儿童医院\n' +
+    '输入 2 = 北医三院',
+    '1'
+  );
+  if (choice === null) return;
+  const c = choice.trim();
+  if (c !== '1' && c !== '2') { alert('请输入 1 (儿童医院) 或 2 (北医三院)'); return; }
+  const isErtong = (c === '1');
+  const hospitalName = isErtong ? '儿童医院' : '北医三院';
+
+  const btn = document.getElementById('exportXlsx');
+  const oldText = btn.textContent;
+  btn.textContent = '⏳ 拉取明细...'; btn.disabled = true;
+
+  try {
+    // 拉全量明细 (实测 ~538KB/0.3s, 一次拉前端切分最优)
+    const res = await fetch(DATA_URL, { cache: 'no-store' });
+    if (!res.ok) throw new Error('拉 /api/data 失败: ' + res.statusText);
+    const data = await res.json();
+    const records = data.records || [];
+
+    // 该医院的门诊号判定
+    const belongs = pn => {
+      if (!pn) return false;
+      const hit = ERTONG_HOSPITAL_CARDS.has(String(pn).trim());
+      return isErtong ? hit : !hit;
+    };
+
+    // 按体征类型聚合明细行: { 类型: [ {门诊号,设备,采集时间, ...体征字段} ] }
+    const byType = {};       // 类型 -> rows(每行是 cell 数组)
+    const seenPn = new Set();
+    for (const row of records) {
+      const dev = row.deviceId;
+      const big = row.data || {};
+      for (const [typ, arr] of Object.entries(big)) {
+        if (!Array.isArray(arr)) continue;
+        if (HIDE_TYPES.has(typ)) continue;  // 隐藏日综合等空跑类型
+        for (const rec of arr) {
+          const pn = rec['门诊号'];
+          if (!belongs(pn)) continue;
+          seenPn.add(String(pn).trim());
+          const colsDef = DETAIL_COLS[typ] || [];
+          // 公共前置列 + 该类型专属列
+          const cells = [
+            { v: String(pn), num: false },
+            { v: dev, num: true },
+            { v: fmtCST((rec['采集时间'] || '').slice(0, 19)), num: false },
+          ];
+          for (const [, field] of colsDef) {
+            let v = rec[field];
+            if (Array.isArray(v) || (v && typeof v === 'object')) v = JSON.stringify(v);
+            cells.push({ v: v, num: typeof v === 'number' });
+          }
+          (byType[typ] = byType[typ] || []).push(cells);
+        }
+      }
+    }
+
+    // 组装所有 sheet
+    const sheets = [];
+    // sheet 1: 患者总览 (含儿童医院补全的暂无数据卡号)
+    const overviewHeader = ['序号', '门诊号(就诊卡号)', '采集明细条数', '设备', '数据类型概览'];
+    const ovMap = {};   // pn -> {count, devs, types}
+    for (const row of records) {
+      for (const [typ, arr] of Object.entries(row.data || {})) {
+        if (!Array.isArray(arr)) continue;
+        if (HIDE_TYPES.has(typ)) continue;  // 隐藏日综合等空跑类型
+        for (const rec of arr) {
+          const pn = rec['门诊号'];
+          if (!belongs(pn)) continue;
+          const k = String(pn).trim();
+          const o = ovMap[k] = ovMap[k] || { count: 0, devs: new Set(), types: {} };
+          o.count++; o.devs.add(row.deviceId); o.types[typ] = (o.types[typ] || 0) + 1;
+        }
+      }
+    }
+    let pnList = Object.keys(ovMap).sort();
+    // 儿童医院补全无数据卡号
+    if (isErtong) {
+      ERTONG_HOSPITAL_CARDS.forEach(card => { if (!ovMap[card]) ovMap[card] = null; });
+      pnList = [...ERTONG_HOSPITAL_CARDS].sort();
+    }
+    const ovRows = pnList.map((pn, i) => {
+      const o = ovMap[pn];
+      if (!o) return [
+        { v: i + 1, num: true }, { v: pn, num: false },
+        { v: '暂无数据', num: false }, { v: '暂无数据', num: false }, { v: '暂无数据', num: false }];
+      const typesStr = Object.entries(o.types).map(([t, n]) => `${t}:${n}`).join(' / ');
+      return [
+        { v: i + 1, num: true }, { v: pn, num: false },
+        { v: o.count, num: true }, { v: [...o.devs].join(','), num: false },
+        { v: typesStr, num: false }];
+    });
+    sheets.push(buildSheet('患者总览', overviewHeader, ovRows));
+
+    // 每种体征一个 sheet (按固定顺序, 只导该医院有数据的类型; 日综合已在聚合时排除)
+    const TYPE_ORDER = ['心率', '血压', '血氧', '体温', '血糖', '步数', '睡眠',
+                        '血液成分', '身体成分', '心电'];
+    const typesPresent = TYPE_ORDER.filter(t => byType[t] && byType[t].length);
+    // 还有不在预定义顺序里的类型(以防新增)兜底
+    Object.keys(byType).forEach(t => { if (!typesPresent.includes(t)) typesPresent.push(t); });
+
+    for (const typ of typesPresent) {
+      const colsDef = DETAIL_COLS[typ] || [];
+      const header = ['门诊号', '设备', '采集时间', ...colsDef.map(([title]) => title)];
+      sheets.push(buildSheet(typ, header, byType[typ]));
+    }
+
+    if (sheets.length <= 1 && !isErtong) {
+      alert(hospitalName + ' 没有任何明细数据。');
+      btn.textContent = oldText; btn.disabled = false;
+      return;
+    }
+
+    // 拼完整 workbook
+    const wb =
+      '<?xml version="1.0" encoding="UTF-8"?>\n' +
+      '<?mso-application progid="Excel.Sheet"?>\n' +
+      '<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" ' +
+      'xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">' +
+      '<Styles><Style ss:ID="hdr"><Font ss:Bold="1"/>' +
+      '<Interior ss:Color="#DCE6F1" ss:Pattern="Solid"/></Style></Styles>' +
+      sheets.join('') +
+      '</Workbook>';
+
+    const blob = new Blob(['﻿' + wb], { type: 'application/vnd.ms-excel' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+    a.href = url;
+    // 儿童医院文件名用完整名单数(总览补全30人), 北医三院用实际有数据数
+    const peopleCount = isErtong ? ovRows.length : seenPn.size;
+    a.download = `${hospitalName}_S101体征明细_${peopleCount}人_${ts}.xls`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch (e) {
+    console.error(e);
+    alert('导出失败: ' + e.message);
+  } finally {
+    btn.textContent = oldText; btn.disabled = false;
+  }
+}
+
+/* ----------------- 患者详情 modal ----------------- */
+// 点患者卡 → 拉该患者 /api/data?patientNo → 每种体征一张表展示具体值
+async function openPatientDetail(pn) {
+  const mask = document.getElementById('patientModal');
+  const body = document.getElementById('pmBody');
+  document.getElementById('pmTitle').textContent = pn ? `门诊号 ${pn}` : '历史数据 (无门诊号)';
+  document.getElementById('pmSub').textContent = '正在拉取明细…';
+  body.innerHTML = '<div class="modal-loading">载入中…</div>';
+  mask.classList.add('open');
+
+  try {
+    const qs = pn ? ('?patientNo=' + encodeURIComponent(pn)) : '';
+    const res = await fetch(DATA_URL + qs, { cache: 'no-store' });
+    if (!res.ok) throw new Error('拉明细失败: ' + res.statusText);
+    const data = await res.json();
+    const records = data.records || [];
+
+    // 按体征类型聚合该患者明细
+    const byType = {};
+    let total = 0;
+    const devs = new Set();
+    for (const row of records) {
+      for (const [typ, arr] of Object.entries(row.data || {})) {
+        if (!Array.isArray(arr)) continue;
+        if (HIDE_TYPES.has(typ)) continue;  // 隐藏日综合等空跑类型
+        for (const rec of arr) {
+          // /api/data 不带 patientNo 时返回全部, 这里再按 pn 过滤(pn=null 看 NULL)
+          const recPn = rec['门诊号'] || null;
+          if (pn ? String(recPn).trim() !== String(pn).trim() : recPn) continue;
+          (byType[typ] = byType[typ] || []).push({ rec, dev: row.deviceId });
+          devs.add(row.deviceId); total++;
+        }
+      }
+    }
+
+    document.getElementById('pmSub').textContent =
+      `设备 ${[...devs].join(', ') || '--'} · 共 ${total} 条明细 · ${Object.keys(byType).length} 类体征`;
+
+    if (!total) { body.innerHTML = '<div class="modal-loading">该患者暂无明细数据</div>'; return; }
+
+    const TYPE_ORDER = ['心率', '血压', '血氧', '体温', '血糖', '步数', '睡眠',
+                        '血液成分', '身体成分', '心电'];
+    const present = TYPE_ORDER.filter(t => byType[t]);
+    Object.keys(byType).forEach(t => { if (!present.includes(t)) present.push(t); });
+
+    let html = '';
+    for (const typ of present) {
+      const list = byType[typ];
+      const colsDef = DETAIL_COLS[typ] || [];
+      const headers = ['采集时间', ...colsDef.map(([title]) => title)];
+      // 按采集时间倒序
+      list.sort((a, b) => String(b.rec['采集时间'] || '').localeCompare(String(a.rec['采集时间'] || '')));
+      const rowsHtml = list.map(({ rec }) => {
+        const cells = [`<td>${escapeHtml(fmtCST((rec['采集时间'] || '').slice(0, 19)))}</td>`];
+        for (const [, field] of colsDef) {
+          let v = rec[field];
+          if (Array.isArray(v) || (v && typeof v === 'object')) v = JSON.stringify(v);
+          cells.push(`<td>${escapeHtml(v == null ? '' : v)}</td>`);
+        }
+        return '<tr>' + cells.join('') + '</tr>';
+      }).join('');
+      html += `<div class="modal-section">
+        <h3>${escapeHtml(typ)} <span class="badge">${list.length} 条</span></h3>
+        <table class="detail-table"><thead><tr>${headers.map(h => `<th>${escapeHtml(h)}</th>`).join('')}</tr></thead>
+        <tbody>${rowsHtml}</tbody></table></div>`;
+    }
+    body.innerHTML = html;
+  } catch (e) {
+    console.error(e);
+    body.innerHTML = '<div class="modal-loading">加载失败: ' + escapeHtml(e.message) + '</div>';
+  }
+}
+
+function closePatientDetail() {
+  document.getElementById('patientModal').classList.remove('open');
+}
+document.getElementById('patientModal').addEventListener('click', e => {
+  if (e.target.id === 'patientModal') closePatientDetail();
+});
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closePatientDetail(); });
+
+/* ----------------- Render ----------------- */
+function renderAll() {
+  renderStatsGrid();
+  renderTypeFilterOptions();
+  renderPatients();
+}
+
+function renderStatsGrid() {
+  const total = Object.values(cachedTypes).reduce((a, b) => a + b, 0);
+  const cards = [{ label: '记录总数', num: total.toLocaleString(), cls: '', sub: '' }];
+  const keyTypes = ['血压', '心率', '血氧', '步数', '日综合', '体温'];
+  keyTypes.forEach(t => {
+    if (cachedTypes[t]) {
+      const cls = t === '血压' ? 'red' : (t === '心率' ? 'orange' : (t === '步数' ? 'green' : ''));
+      // v10 patch: 日综合显示 "有效 N" 副标 (排除 dailyRecords 全空的 SDK 空跑)
+      let sub = '';
+      if (t === '日综合') {
+        const v = cachedTypesValid[t] || 0;
+        sub = v === cachedTypes[t] ? '' : `有效 ${v.toLocaleString()}`;
+      }
+      cards.push({ label: t, num: cachedTypes[t].toLocaleString(), cls, sub });
+    }
+  });
+  document.getElementById('statsGrid').innerHTML = cards.map(c =>
+    `<div class="stat-card ${c.cls}"><div class="num">${c.num}</div><div class="label">${c.label}${c.sub ? ` <span class="stat-sub">${c.sub}</span>` : ''}</div></div>`
+  ).join('');
+}
+
+function renderTypeFilterOptions() {
+  const sel = document.getElementById('filterType');
+  const current = sel.value;
+  const types = Object.keys(cachedTypes).sort((a, b) => cachedTypes[b] - cachedTypes[a]);
+  const existing = new Set(Array.from(sel.options).map(o => o.value));
+  if (types.length === existing.size - 1 && types.every(t => existing.has(t))) return;
+  sel.innerHTML = '<option value="all">全部类型</option>' +
+    types.map(t => `<option value="${escapeHtml(t)}">${escapeHtml(t)} (${cachedTypes[t]})</option>`).join('');
+  if (existing.has(current)) sel.value = current;
+}
+
+function renderPatients() {
+  const t0 = performance.now();
+  const list = applyFiltersSort();
+  const totalNullExcluded = cachedPatients.filter(p => p.pn !== 'NULL').length;
+  const today = new Date().toISOString().slice(0, 10);
+  const todayActive = cachedPatients.filter(p => p.pn !== 'NULL' && p.latest && p.latest.slice(0, 10) === today).length;
+  document.getElementById('patientMeta').textContent =
+    `共 ${totalNullExcluded} 位 (不计 NULL), 今日活跃 ${todayActive} 位 · 筛选后 ${list.length} 位`;
+
+  const totalPages = Math.max(1, Math.ceil(list.length / state.pageSize));
+  if (state.page > totalPages) state.page = totalPages;
+  if (state.page < 1) state.page = 1;
+  const start = (state.page - 1) * state.pageSize;
+  const slice = list.slice(start, start + state.pageSize);
+
+  const container = document.getElementById('patients');
+  if (list.length === 0) {
+    container.innerHTML = '<div class="empty"><div class="icon">🔍</div>未找到匹配的患者<br><span style="font-size:12px;color:#9ca3af;">试试调整搜索关键字或筛选条件</span></div>';
+    document.getElementById('pagination').style.display = 'none';
+    document.getElementById('renderMeta').textContent =
+      `渲染 0 / ${list.length} 条 · ${(performance.now() - t0).toFixed(1)} ms`;
+    return;
+  }
+
+  const frag = document.createDocumentFragment();
+  const q = state.search.trim();
+  slice.forEach(p => frag.appendChild(buildPatientCard(p, q, today)));
+  container.replaceChildren(frag);
+
+  renderPagination(list.length, totalPages);
+  document.getElementById('renderMeta').textContent =
+    `渲染 ${slice.length} / ${list.length} 条 · ${(performance.now() - t0).toFixed(1)} ms`;
+  saveStateToHash();
+}
+
+function buildPatientCard(p, q, today) {
+  const since = fmtSince(p.latest);
+  const isNull = p.pn === 'NULL';
+  const isToday = p.latest && p.latest.slice(0, 10) === today;
+  const devs = p.devices.join(', ');
+  const typesHtml = Object.entries(p.types).filter(([n]) => !HIDE_TYPES.has(n))
+    .sort((a, b) => b[1] - a[1])
+    .map(([n, c]) => `<span class="type-pill ${typeClass(n)}">${escapeHtml(n)} ${c}</span>`).join('');
+
+  let cls = 'patient-card';
+  if (isNull) cls += ' is-null';
+  else if (isToday) cls += ' has-today';
+
+  const titleHtml = isNull ? '历史数据 (无门诊号)' : highlightMatch(String(p.pn), q);
+  const devsHtml = q ? highlightMatch(devs, q) : escapeHtml(devs);
+
+  const el = document.createElement('div');
+  el.className = cls;
+  el.style.cursor = 'pointer';
+  el.title = '点击查看该患者的具体体征数据';
+  el.innerHTML = `
+    <div class="patient-header">
+      <div class="patient-no">${titleHtml}</div>
+      <div class="patient-tag">${isToday ? '今日活跃' : (isNull ? 'v9 之前' : 'v10 入组')}</div>
+    </div>
+    <div class="patient-body">
+      <div class="metric-row"><span class="key">采集条数</span><span class="val">${p.count}</span></div>
+      <div class="metric-row"><span class="key">设备 deviceId</span><span class="val muted">${devsHtml}</span></div>
+      <div class="metric-row"><span class="key">最早采集</span><span class="val muted">${fmtCST(p.earliest)}</span></div>
+      <div class="metric-row"><span class="key">最晚采集</span><span class="val">${fmtCST(p.latest)}</span></div>
+      <div class="time-since ${since.cls}">距最新数据: ${since.text}</div>
+      <div class="type-bars">${typesHtml}</div>
+      <div class="card-hint">👆 点击看具体数值</div>
+    </div>
+  `;
+  if (!isNull) el.addEventListener('click', () => openPatientDetail(p.pn));
+  else el.addEventListener('click', () => openPatientDetail(null));
+  return el;
+}
+
+/* ----------------- Pagination UI ----------------- */
+function renderPagination(total, totalPages) {
+  const el = document.getElementById('pagination');
+  if (total <= PAGE_SIZE_OPTIONS[0] && state.pageSize === PAGE_SIZE_OPTIONS[0]) {
+    el.style.display = 'none';
+    return;
+  }
+  el.style.display = '';
+  const start = (state.page - 1) * state.pageSize + 1;
+  const end = Math.min(state.page * state.pageSize, total);
+
+  const pages = pageList(state.page, totalPages);
+
+  el.innerHTML = `
+    <span class="info">第 ${start}-${end} 条 / 共 ${total} 条</span>
+    <button type="button" data-act="prev" ${state.page === 1 ? 'disabled' : ''}>上一页</button>
+    ${pages.map(p => p === '...'
+      ? '<span class="ellipsis">…</span>'
+      : `<button type="button" data-page="${p}" class="${p === state.page ? 'active' : ''}">${p}</button>`
+    ).join('')}
+    <button type="button" data-act="next" ${state.page === totalPages ? 'disabled' : ''}>下一页</button>
+    <select id="pageSizeSel" title="每页条数" style="height:36px;border:1px solid #e5e7eb;border-radius:8px;padding:0 8px;background:#fff;cursor:pointer;font-size:13px;margin-left:6px;">
+      ${PAGE_SIZE_OPTIONS.map(n => `<option value="${n}" ${n === state.pageSize ? 'selected' : ''}>${n} 条/页</option>`).join('')}
+    </select>
+    <span class="jump">
+      跳转到 <input type="number" id="pageJump" min="1" max="${totalPages}" value="${state.page}"> / ${totalPages}
+    </span>
+  `;
+}
+
+function pageList(cur, total) {
+  if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1);
+  const out = [1];
+  const lo = Math.max(2, cur - 1);
+  const hi = Math.min(total - 1, cur + 1);
+  if (lo > 2) out.push('...');
+  for (let i = lo; i <= hi; i++) out.push(i);
+  if (hi < total - 1) out.push('...');
+  out.push(total);
+  return out;
+}
+
+/* ----------------- URL hash state ----------------- */
+function saveStateToHash() {
+  const params = new URLSearchParams();
+  if (state.search) params.set('q', state.search);
+  if (state.filterStatus !== 'all') params.set('status', state.filterStatus);
+  if (state.filterType !== 'all') params.set('type', state.filterType);
+  if (state.sortBy !== 'latest') params.set('sort', state.sortBy);
+  if (state.page !== 1) params.set('page', state.page);
+  if (state.pageSize !== 20) params.set('size', state.pageSize);
+  const s = params.toString();
+  const target = s ? '#' + s : '';
+  if (location.hash !== target) {
+    history.replaceState(null, '', location.pathname + location.search + target);
+  }
+}
+
+function loadStateFromHash() {
+  const params = new URLSearchParams(location.hash.replace(/^#/, ''));
+  state.search = params.get('q') || '';
+  state.filterStatus = params.get('status') || 'all';
+  state.filterType = params.get('type') || 'all';
+  state.sortBy = params.get('sort') || 'latest';
+  state.page = Math.max(1, parseInt(params.get('page'), 10) || 1);
+  const sz = parseInt(params.get('size'), 10);
+  state.pageSize = PAGE_SIZE_OPTIONS.includes(sz) ? sz : 20;
+
+  document.getElementById('searchInput').value = state.search;
+  document.getElementById('filterStatus').value = state.filterStatus;
+  document.getElementById('sortBy').value = state.sortBy;
+}
+
+/* ----------------- Event wiring ----------------- */
+function debounce(fn, ms) {
+  let t = null;
+  return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
+}
+
+const debouncedSearchRender = debounce(() => {
+  state.page = 1;
+  renderPatients();
+}, 250);
+
+document.getElementById('searchInput').addEventListener('input', e => {
+  state.search = e.target.value;
+  debouncedSearchRender();
+});
+
+document.getElementById('filterStatus').addEventListener('change', e => {
+  state.filterStatus = e.target.value;
+  state.page = 1;
+  renderPatients();
+});
+
+document.getElementById('filterType').addEventListener('change', e => {
+  state.filterType = e.target.value;
+  state.page = 1;
+  renderPatients();
+});
+
+document.getElementById('sortBy').addEventListener('change', e => {
+  state.sortBy = e.target.value;
+  state.page = 1;
+  renderPatients();
+});
+
+document.getElementById('clearFilters').addEventListener('click', () => {
+  state.search = ''; state.filterStatus = 'all'; state.filterType = 'all';
+  state.sortBy = 'latest'; state.page = 1; state.pageSize = 20;
+  document.getElementById('searchInput').value = '';
+  document.getElementById('filterStatus').value = 'all';
+  document.getElementById('filterType').value = 'all';
+  document.getElementById('sortBy').value = 'latest';
+  renderPatients();
+});
+
+document.getElementById('exportXlsx').addEventListener('click', exportToExcel);
+
+document.getElementById('pagination').addEventListener('click', e => {
+  const btn = e.target.closest('button');
+  if (!btn || btn.disabled) return;
+  const totalPages = Math.max(1, Math.ceil(applyFiltersSort().length / state.pageSize));
+  const act = btn.dataset.act;
+  if (act === 'prev' && state.page > 1) state.page--;
+  else if (act === 'next' && state.page < totalPages) state.page++;
+  else if (btn.dataset.page) state.page = parseInt(btn.dataset.page, 10);
+  else return;
+  renderPatients();
+  window.scrollTo({ top: document.querySelector('.toolbar').offsetTop - 12, behavior: 'smooth' });
+});
+
+document.getElementById('pagination').addEventListener('change', e => {
+  if (e.target.id === 'pageSizeSel') {
+    state.pageSize = parseInt(e.target.value, 10);
+    state.page = 1;
+    renderPatients();
+  }
+});
+
+document.getElementById('pagination').addEventListener('keydown', e => {
+  if (e.target.id === 'pageJump' && e.key === 'Enter') {
+    const n = parseInt(e.target.value, 10);
+    const totalPages = Math.max(1, Math.ceil(applyFiltersSort().length / state.pageSize));
+    if (n >= 1 && n <= totalPages) { state.page = n; renderPatients(); }
+  }
+});
+
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+  if (e.key === '/') {
+    e.preventDefault();
+    document.getElementById('searchInput').focus();
+  } else if (e.key === 'ArrowLeft' && state.page > 1) {
+    state.page--; renderPatients();
+  } else if (e.key === 'ArrowRight') {
+    const totalPages = Math.max(1, Math.ceil(applyFiltersSort().length / state.pageSize));
+    if (state.page < totalPages) { state.page++; renderPatients(); }
+  }
+});
+
+document.getElementById('refreshBtn').addEventListener('click', fetchAndRender);
+
+function startAutoRefresh() {
+  if (autoRefreshTimer) clearInterval(autoRefreshTimer);
+  autoRefreshTimer = setInterval(fetchAndRender, REFRESH_INTERVAL_MS);
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    if (autoRefreshTimer) { clearInterval(autoRefreshTimer); autoRefreshTimer = null; }
+  } else {
+    fetchAndRender();
+    startAutoRefresh();
+  }
+});
+
+loadStateFromHash();
+fetchAndRender();
+startAutoRefresh();
+</script>
+</body>
+</html>
